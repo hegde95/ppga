@@ -8,13 +8,14 @@ from pathlib import Path
 import numpy as np
 import torch
 import wandb
+from ribs.schedulers import Scheduler
+
 from attrdict import AttrDict
 from envs.brax_custom import reward_offset
 from envs.brax_custom.brax_env import make_vec_env_brax
 from models.actor_critic import Actor
 from qd.archives import GridArchive
-from ribs2.emitters import PPGAEmitter
-from ribs.schedulers import Scheduler
+from qd.emitters import PPGAEmitter
 from RL.ppo import PPO
 from utils.archive_utils import (archive_df_to_archive,
                                  load_scheduler_from_checkpoint, save_heatmap)
@@ -410,7 +411,7 @@ def create_scheduler(cfg: AttrDict,
             PPGAEmitter(
                 ppo,
                 archive,
-                initial_sol,
+                x0=initial_sol,
                 sigma0=cfg.sigma0,
                 batch_size=batch_size,
                 seed=emitter_seeds[0],
@@ -425,7 +426,7 @@ def create_scheduler(cfg: AttrDict,
             PPGAEmitter(
                 ppo,
                 archive,
-                initial_sol,
+                x0=initial_sol,
                 sigma0=cfg.sigma0,
                 batch_size=batch_size,
                 ranker='imp',
@@ -444,10 +445,12 @@ def create_scheduler(cfg: AttrDict,
         f"dims {archive_dims}. Min threshold is {threshold_min}. Restart rule is {cfg.restart_rule}"
     )
 
-    return Scheduler(archive,
-                     emitters,
-                     result_archive=result_archive,
-                     add_mode=mode)
+    return Scheduler(
+        archive,
+        emitters,
+        result_archive=result_archive,
+        add_mode=mode,
+    )
 
 
 def train_ppga(cfg: AttrDict, vec_env):
