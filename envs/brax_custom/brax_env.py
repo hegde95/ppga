@@ -43,6 +43,7 @@ def make_vec_env_brax(cfg):
         kwargs['clip_rewards'] = (-10, 10)
     vec_env = gym.make(_to_custom_env[cfg.env_name]['custom_env_name'], batch_size=cfg.env_batch_size, seed=cfg.seed,
                        **kwargs)
-    vec_env = to_torch.JaxToTorchWrapper(vec_env, device='cuda')
+    vec_env = to_torch.JaxToTorchWrapper(
+        vec_env, device=('cuda' if torch.cuda.is_available() else 'cpu'))
 
     return vec_env
