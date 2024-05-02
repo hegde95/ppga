@@ -18,10 +18,8 @@ wandb
 evotorch==0.3.0
 colorlog
 
+ribs[all]==0.7.1
 qdax
 
 # Since attrdict has been deprecated, we need a patched local version.
 -e ./attrdict
-
-# Custom pyribs
--e ./pyribs

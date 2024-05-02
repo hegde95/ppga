@@ -1,21 +1,21 @@
 """PPGA Emitter"""
 import itertools
-from typing import Optional, List
+from typing import List, Optional
 
 import numpy as np
 import torch
 import wandb
-
 from ribs2.emitters._dqd_emitter_base import DQDEmitterBase
 from ribs2.emitters.opt import AdamOpt, GradientAscentOpt
 from ribs2.emitters.opt._xnes import ExponentialES
 from ribs2.emitters.rankers import _get_ranker
-from utils.utilities import log
-from ribs2.archives import ArchiveBase
+from ribs.archives import ArchiveBase
 from RL.ppo import PPO
+from utils.utilities import log
 
 
 class PPGAEmitter(DQDEmitterBase):
+
     def __init__(self,
                  ppo: PPO,
                  archive: ArchiveBase,
@@ -34,8 +34,7 @@ class PPGAEmitter(DQDEmitterBase):
                  step_size: Optional[float] = None,
                  normalize_obs: bool = True,
                  normalize_returns: bool = True,
-                 adaptive_stddev: bool = True
-                 ):
+                 adaptive_stddev: bool = True):
         DQDEmitterBase.__init__(self, archive, len(x0), bounds)
         self._epsilon = epsilon
         self._rng = np.random.default_rng(seed)
@@ -48,7 +47,9 @@ class PPGAEmitter(DQDEmitterBase):
         self._ranker.reset(self, archive, self._rng)
         self.ppo = ppo
 
-        assert grad_opt in ['ppo', 'adam', 'gradient_ascent'], f'Invalid gradient optimizer passed in, {grad_opt=}'
+        assert grad_opt in [
+            'ppo', 'adam', 'gradient_ascent'
+        ], f'Invalid gradient optimizer passed in, {grad_opt=}'
         self._grad_opt = None
         if grad_opt == 'adam':
             self._grad_opt = AdamOpt(self._x0, step_size)
@@ -229,11 +230,11 @@ class PPGAEmitter(DQDEmitterBase):
                 consist of the objective gradient of the solution followed by
                 the measure gradients.
             status_batch (numpy.ndarray): 1d array of
-                :class:`ribs2.archive.addstatus` returned by a series of calls to
+                :class:`ribs.archives.AddStatus` returned by a series of calls to
                 archive's :meth:`add()` method.
             value_batch (numpy.ndarray): 1d array of floats returned by a series
                 of calls to archive's :meth:`add()` method. for what these
-                floats represent, refer to :meth:`ribs2.archives.add()`.
+                floats represent, refer to :meth:`ribs.archives.add()`.
             metadata_batch (numpy.ndarray): 1d object array containing a
                 metadata object for each solution.
         """
@@ -265,11 +266,11 @@ class PPGAEmitter(DQDEmitterBase):
                 dimension) array with the measure space coordinates of each
                 solution.
             status_batch (numpy.ndarray): 1d array of
-                :class:`ribs2.archive.addstatus` returned by a series of calls to
+                :class:`ribs.archives.AddStatus` returned by a series of calls to
                 archive's :meth:`add()` method.
             value_batch (numpy.ndarray): 1d array of floats returned by a series
                 of calls to archive's :meth:`add()` method. for what these
-                floats represent, refer to :meth:`ribs2.archives.add()`.
+                floats represent, refer to :meth:`ribs.archives.add()`.
             metadata_batch (numpy.ndarray): 1d object array containing a
                 metadata object for each solution.
         """
@@ -302,20 +303,29 @@ class PPGAEmitter(DQDEmitterBase):
             })
 
         # Update Evolution Strategy.
-        coeffs, coeff_rankings = self._grad_coefficients[indices], ranking_values[indices]
-        coeffs, coeff_rankings = coeffs[:num_parents], coeff_rankings[:num_parents]
+        coeffs, coeff_rankings = self._grad_coefficients[
+            indices], ranking_values[indices]
+        coeffs, coeff_rankings = coeffs[:
+                                        num_parents], coeff_rankings[:
+                                                                     num_parents]
         self.opt.tell(value_batch)  # XNES
 
         # Check for reset and maybe reset
-        stop_status = self.opt.check_stop(ranking_values) or self._check_restart(new_sols)
+        stop_status = self.opt.check_stop(
+            ranking_values) or self._check_restart(new_sols)
         if stop_status:
             new_elite = self.archive.sample_elites(1)
-            new_theta, measures, obj = new_elite.solution_batch[0], new_elite.measures_batch[0], new_elite.objective_batch[0]
-            log.debug(f'XNES is restarting with a new solution whose measures are {measures} and objective is {obj}')
+            new_theta, measures, obj = new_elite.solution_batch[
+                0], new_elite.measures_batch[0], new_elite.objective_batch[0]
+            log.debug(
+                f'XNES is restarting with a new solution whose measures are {measures} and objective is {obj}'
+            )
             if self._normalize_obs:
-                self.mean_agent_obs_normalizer.load_state_dict(metadata_batch[0]['obs_normalizer'])
+                self.mean_agent_obs_normalizer.load_state_dict(
+                    metadata_batch[0]['obs_normalizer'])
             if self._normalize_returns:
-                self._mean_agent_return_normalizer.load_state_dict(metadata_batch[0]['return_normalizer'])
+                self._mean_agent_return_normalizer.load_state_dict(
+                    metadata_batch[0]['return_normalizer'])
 
             self._grad_opt.theta = new_theta
             self.opt = ExponentialES(self._num_coefficients,

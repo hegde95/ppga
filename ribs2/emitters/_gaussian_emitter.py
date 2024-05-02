@@ -19,9 +19,9 @@ class GaussianEmitter(EmitterBase):
     <https://arxiv.org/pdf/1504.04909.pdf>`_.
 
     Args:
-        archive (ribs2.archives.ArchiveBase): An archive to use when creating and
+        archive (ribs.archives.ArchiveBase): An archive to use when creating and
             inserting solutions. For instance, this can be
-            :class:`ribs2.archives.GridArchive`.
+            :class:`ribs.archives.GridArchive`.
         sigma (float or array-like): Standard deviation of the Gaussian
             distribution. Note we assume the Gaussian is diagonal, so if this
             argument is an array, it must be 1D.
@@ -150,7 +150,7 @@ class GaussianEmitter(EmitterBase):
             value_batch  (numpy.ndarray): 1D array of floats returned by a
                 series of calls to archive's :meth:`add_single()` method or by a
                 single call to archive's :meth:`add()`. For what these floats
-                represent, refer to :meth:`ribs2.archives.add()`.
+                represent, refer to :meth:`ribs.archives.add()`.
             metadata_batch (numpy.ndarray): 1D object array containing a
                 metadata object for each solution.
         """

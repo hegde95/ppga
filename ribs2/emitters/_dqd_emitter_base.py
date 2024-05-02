@@ -52,7 +52,7 @@ class DQDEmitterBase(EmitterBase):
                 archive's :meth:`add()` method.
             value_batch (numpy.ndarray): 1d array of floats returned by a series
                 of calls to archive's :meth:`add()` method. for what these
-                floats represent, refer to :meth:`ribs2.archives.add()`.
+                floats represent, refer to :meth:`ribs.archives.add()`.
             metadata_batch (numpy.ndarray): 1d object array containing a
                 metadata object for each solution.
         """

@@ -31,9 +31,9 @@ class GradientAborescenceEmitter(DQDEmitterBase):
     emitter.
 
     Args:
-        archive (ribs2.archives.ArchiveBase): An archive to use when creating and
+        archive (ribs.archives.ArchiveBase): An archive to use when creating and
             inserting solutions. For instance, this can be
-            :class:`ribs2.archives.GridArchive`.
+            :class:`ribs.archives.GridArchive`.
         x0 (np.ndarray): Initial solution.
         sigma0 (float): Initial step size / standard deviation.
         step_size (float): Step size for the gradient optimizer
@@ -304,7 +304,7 @@ class GradientAborescenceEmitter(DQDEmitterBase):
                 archive's :meth:`add()` method.
             value_batch (numpy.ndarray): 1d array of floats returned by a series
                 of calls to archive's :meth:`add()` method. for what these
-                floats represent, refer to :meth:`ribs2.archives.add()`.
+                floats represent, refer to :meth:`ribs.archives.add()`.
             metadata_batch (numpy.ndarray): 1d object array containing a
                 metadata object for each solution.
         """
@@ -340,7 +340,7 @@ class GradientAborescenceEmitter(DQDEmitterBase):
                 archive's :meth:`add()` method.
             value_batch (numpy.ndarray): 1d array of floats returned by a series
                 of calls to archive's :meth:`add()` method. for what these
-                floats represent, refer to :meth:`ribs2.archives.add()`.
+                floats represent, refer to :meth:`ribs.archives.add()`.
             metadata_batch (numpy.ndarray): 1d object array containing a
                 metadata object for each solution.
         """

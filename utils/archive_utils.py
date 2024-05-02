@@ -1,29 +1,29 @@
-import pandas
-import torch
 import os
 import pickle
-import matplotlib.pyplot as plt
-import numpy as np
+from typing import Optional
+
 import jax
 import jax.numpy as jnp
-
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas
+import torch
 from attrdict import AttrDict
-from ribs.archives import CVTArchive, GridArchive
-from ribs.visualize import cvt_archive_heatmap, grid_archive_heatmap
-from typing import Optional
+from envs.brax_custom import reward_offset
+from envs.brax_custom.brax_env import make_vec_env_brax
+from jax._src.flatten_util import ravel_pytree
 from models.actor_critic import Actor, PGAMEActor
 from models.vectorized import VectorizedActor
-from envs.brax_custom.brax_env import make_vec_env_brax
-from envs.brax_custom import reward_offset
-
-
-from qdax.core.neuroevolution.networks.networks import MLP
 from qdax import environments
 from qdax.core.containers.mapelites_repertoire import MapElitesRepertoire
-from jax._src.flatten_util import ravel_pytree
+from qdax.core.neuroevolution.networks.networks import MLP
+from ribs.archives import CVTArchive, GridArchive
+from ribs.visualize import cvt_archive_heatmap, grid_archive_heatmap
 
 
-def save_heatmap(archive, heatmap_path, emitter_loc: Optional[tuple[float, ...]] = None,
+def save_heatmap(archive,
+                 heatmap_path,
+                 emitter_loc: Optional[tuple[float, ...]] = None,
                  forces: Optional[tuple[float, ...]] = None):
     """Saves a heatmap of the archive to the given path.
     Args:
@@ -47,23 +47,30 @@ def save_heatmap(archive, heatmap_path, emitter_loc: Optional[tuple[float, ...]]
 
 
 def load_scheduler_from_checkpoint(scheduler_path, seed, device):
-    assert os.path.exists(scheduler_path), f'Error! {scheduler_path=} does not exist'
+    assert os.path.exists(
+        scheduler_path), f'Error! {scheduler_path=} does not exist'
     with open(scheduler_path, 'rb') as f:
         scheduler = pickle.load(f)
     # reinstantiate the pytorch generator with the correct seed
-    scheduler.emitters[0].opt.problem._generator = torch.Generator(device=device)
+    scheduler.emitters[0].opt.problem._generator = torch.Generator(
+        device=device)
     scheduler.emitters[0].opt.problem._generator.manual_seed(seed)
     return scheduler
 
 
 def load_archive(archive_path):
-    assert os.path.exists(archive_path), f'Error! {archive_path=} does not exist'
+    assert os.path.exists(
+        archive_path), f'Error! {archive_path=} does not exist'
     with open(archive_path, 'rb') as f:
         archive = pickle.load(f)
     return archive
 
 
-def evaluate(vec_agent, vec_env, num_dims, use_action_means=True, normalize_obs=False):
+def evaluate(vec_agent,
+             vec_env,
+             num_dims,
+             use_action_means=True,
+             normalize_obs=False):
     '''
     Evaluate all agents for one episode
     :param vec_agent: Vectorized agents for vectorized inference
@@ -79,15 +86,20 @@ def evaluate(vec_agent, vec_env, num_dims, use_action_means=True, normalize_obs=
     obs = obs.to(device)
     dones = torch.BoolTensor([False for _ in range(vec_env.num_envs)])
     all_dones = torch.zeros((num_steps, vec_env.num_envs)).to(device)
-    measures_acc = torch.zeros((num_steps, vec_env.num_envs, num_dims)).to(device)
+    measures_acc = torch.zeros(
+        (num_steps, vec_env.num_envs, num_dims)).to(device)
     measures = torch.zeros((vec_env.num_envs, num_dims)).to(device)
 
     if normalize_obs:
         repeats = vec_env.num_envs // vec_agent.num_models
-        obs_mean = [normalizer.obs_rms.mean for normalizer in vec_agent.obs_normalizers]
+        obs_mean = [
+            normalizer.obs_rms.mean for normalizer in vec_agent.obs_normalizers
+        ]
         obs_mean = torch.vstack(obs_mean).to(device)
         obs_mean = torch.repeat_interleave(obs_mean, dim=0, repeats=repeats)
-        obs_var = [normalizer.obs_rms.var for normalizer in vec_agent.obs_normalizers]
+        obs_var = [
+            normalizer.obs_rms.var for normalizer in vec_agent.obs_normalizers
+        ]
         obs_var = torch.vstack(obs_var).to(device)
         obs_var = torch.repeat_interleave(obs_var, dim=0, repeats=repeats)
 
@@ -110,19 +122,29 @@ def evaluate(vec_agent, vec_env, num_dims, use_action_means=True, normalize_obs=
 
     # the first done in each env is where that trajectory ends
     traj_lengths = torch.argmax(all_dones, dim=0) + 1
-    avg_traj_lengths = traj_lengths.to(torch.float32).reshape((vec_agent.num_models, vec_env.num_envs // vec_agent.num_models)).mean(dim=1).cpu().numpy()
+    avg_traj_lengths = traj_lengths.to(torch.float32).reshape(
+        (vec_agent.num_models,
+         vec_env.num_envs // vec_agent.num_models)).mean(dim=1).cpu().numpy()
     # TODO: figure out how to vectorize this
     for i in range(vec_env.num_envs):
-        measures[i] = measures_acc[:traj_lengths[i], i].sum(dim=0) / traj_lengths[i]
-    measures = measures.reshape(vec_agent.num_models, vec_env.num_envs // vec_agent.num_models, -1).mean(dim=1)
+        measures[i] = measures_acc[:traj_lengths[i],
+                                   i].sum(dim=0) / traj_lengths[i]
+    measures = measures.reshape(vec_agent.num_models,
+                                vec_env.num_envs // vec_agent.num_models,
+                                -1).mean(dim=1)
 
     metadata = np.array([{'traj_length': t} for t in avg_traj_lengths])
-    total_reward = total_reward.reshape((vec_agent.num_models, vec_env.num_envs // vec_agent.num_models))
+    total_reward = total_reward.reshape(
+        (vec_agent.num_models, vec_env.num_envs // vec_agent.num_models))
     total_reward = total_reward.mean(axis=1)
-    return total_reward.reshape(-1, ), measures.reshape(-1, num_dims).detach().cpu().numpy(), metadata
+    return total_reward.reshape(-1,), measures.reshape(
+        -1, num_dims).detach().cpu().numpy(), metadata
 
 
-def reevaluate_ppga_archive(env_cfg, agent_cfg, original_archive, save_path=None):
+def reevaluate_ppga_archive(env_cfg,
+                            agent_cfg,
+                            original_archive,
+                            save_path=None):
     num_sols = len(original_archive)
     print(f'{num_sols=}')
     solution_batch_size = 100
@@ -134,22 +156,36 @@ def reevaluate_ppga_archive(env_cfg, agent_cfg, original_archive, save_path=None
 
     agents = []
     for elite in original_archive:
-        agent = Actor(obs_shape=obs_shape[0], action_shape=action_shape, normalize_obs=agent_cfg.normalize_obs).deserialize(elite.solution).to(device)
+        agent = Actor(obs_shape=obs_shape[0],
+                      action_shape=action_shape,
+                      normalize_obs=agent_cfg.normalize_obs).deserialize(
+                          elite.solution).to(device)
         if agent_cfg.normalize_obs:
-            agent.obs_normalizer.load_state_dict(elite.metadata['obs_normalizer'])
+            agent.obs_normalizer.load_state_dict(
+                elite.metadata['obs_normalizer'])
         agents.append(agent)
     agents = np.array(agents)
 
     all_objs, all_measures, all_metadata = [], [], []
     for i in range(0, num_sols, solution_batch_size):
-        agent_batch = agents[i: i + solution_batch_size]
-        if env_cfg.env_batch_size % len(agent_batch) != 0 and len(original_archive) % solution_batch_size != 0:
+        agent_batch = agents[i:i + solution_batch_size]
+        if env_cfg.env_batch_size % len(agent_batch) != 0 and len(
+                original_archive) % solution_batch_size != 0:
             del vec_env
             env_cfg.env_batch_size = len(agent_batch) * 50
             vec_env = make_vec_env_brax(env_cfg)
         print(f'Evaluating solution batch {i}')
-        vec_inference = VectorizedActor(agent_batch, Actor, obs_shape=obs_shape, action_shape=action_shape, normalize_obs=agent_cfg.normalize_obs).to(device)
-        objs, measures, metadata = evaluate(vec_inference, vec_env, env_cfg.num_dims, normalize_obs=agent_cfg.normalize_obs)
+        vec_inference = VectorizedActor(
+            agent_batch,
+            Actor,
+            obs_shape=obs_shape,
+            action_shape=action_shape,
+            normalize_obs=agent_cfg.normalize_obs).to(device)
+        objs, measures, metadata = evaluate(
+            vec_inference,
+            vec_env,
+            env_cfg.num_dims,
+            normalize_obs=agent_cfg.normalize_obs)
         all_objs.append(objs)
         all_measures.append(measures)
         all_metadata.append(metadata)
@@ -168,14 +204,10 @@ def reevaluate_ppga_archive(env_cfg, agent_cfg, original_archive, save_path=None
                               ranges=bounds,
                               threshold_min=-10000,
                               seed=env_cfg.seed,
-                              qd_offset=reward_offset[env_cfg.env_name])
+                              reward_offset=reward_offset[env_cfg.env_name])
     # add the re-evaluated solutions to the new archive
-    new_archive.add(
-        np.ones((len(original_archive), 1)),
-        all_objs,
-        all_measures,
-        all_metadata
-    )
+    new_archive.add(np.ones((len(original_archive), 1)), all_objs, all_measures,
+                    all_metadata)
     print(f'Re-evaluated PPGA Archive \n'
           f'Coverage: {new_archive.stats.coverage} \n'
           f'Max fitness: {new_archive.stats.obj_max} \n'
@@ -183,18 +215,23 @@ def reevaluate_ppga_archive(env_cfg, agent_cfg, original_archive, save_path=None
           f'QD Score: {new_archive.offset_qd_score}')
 
     if save_path is not None:
-        archive_fp = os.path.join(save_path, f'{env_cfg.env_name}_reeval_archive.pkl')
+        archive_fp = os.path.join(save_path,
+                                  f'{env_cfg.env_name}_reeval_archive.pkl')
         with open(archive_fp, 'wb') as f:
             pickle.dump(new_archive, f)
 
     return new_archive
 
 
-def reevaluate_pgame_archive(env_cfg, archive_df=None, solution_batch=None, save_path=None):
+def reevaluate_pgame_archive(env_cfg,
+                             archive_df=None,
+                             solution_batch=None,
+                             save_path=None):
     assert archive_df is not None or solution_batch is not None, \
         'Need to pass in either an archive dataframe or a numpy array of solutions'
     # if the archive size causes OOM errors, use this instead. Will be slower and less efficient
-    solutions = archive_df.filter(like='solution').to_numpy() if solution_batch is None else solution_batch
+    solutions = archive_df.filter(like='solution').to_numpy(
+    ) if solution_batch is None else solution_batch
     num_sols = solutions.shape[0]
     print(f'{num_sols=}')
     solution_batch_size = 100
@@ -203,20 +240,34 @@ def reevaluate_pgame_archive(env_cfg, archive_df=None, solution_batch=None, save
 
     obs_shape, action_shape = vec_env.single_observation_space.shape, vec_env.single_action_space.shape
     device = torch.device('cuda')
-    cfg = AttrDict({'normalize_obs': False, 'normalize_rewards': False, 'num_envs': num_sols, 'num_dims': env_cfg.num_dims})
+    cfg = AttrDict({
+        'normalize_obs': False,
+        'normalize_rewards': False,
+        'num_envs': num_sols,
+        'num_dims': env_cfg.num_dims
+    })
 
     all_objs, all_measures, all_metadata = [], [], []
     for i in range(0, num_sols, solution_batch_size):
-        sol_batch = solutions[i: i + solution_batch_size]
-        if env_cfg.env_batch_size % sol_batch.shape[0] != 0 and num_sols % solution_batch_size != 0:  # this is the last chunk to process, and it's not full width
+        sol_batch = solutions[i:i + solution_batch_size]
+        if env_cfg.env_batch_size % sol_batch.shape[
+                0] != 0 and num_sols % solution_batch_size != 0:  # this is the last chunk to process, and it's not full width
             # recreate the vec env with the right number of envs so that the shapes match
             del vec_env
             env_cfg.env_batch_size = sol_batch.shape[0] * 50
             vec_env = make_vec_env_brax(env_cfg)
         print(f'Evaluating solution batch {i}')
-        agents = [PGAMEActor(obs_shape=obs_shape[0], action_shape=action_shape).deserialize(sol).to(device) for sol in sol_batch]
-        vec_inference = VectorizedActor(agents, PGAMEActor, obs_shape=obs_shape, action_shape=action_shape).to(device)
-        objs, measures, metadata = evaluate(vec_inference, vec_env, env_cfg.num_dims)
+        agents = [
+            PGAMEActor(obs_shape=obs_shape[0],
+                       action_shape=action_shape).deserialize(sol).to(device)
+            for sol in sol_batch
+        ]
+        vec_inference = VectorizedActor(agents,
+                                        PGAMEActor,
+                                        obs_shape=obs_shape,
+                                        action_shape=action_shape).to(device)
+        objs, measures, metadata = evaluate(vec_inference, vec_env,
+                                            env_cfg.num_dims)
         all_objs.append(objs)
         all_measures.append(measures)
         all_metadata.append(metadata)
@@ -235,14 +286,10 @@ def reevaluate_pgame_archive(env_cfg, archive_df=None, solution_batch=None, save
                               ranges=bounds,
                               threshold_min=-10000,
                               seed=env_cfg.seed,
-                              qd_offset=reward_offset[env_cfg.env_name])
+                              reward_offset=reward_offset[env_cfg.env_name])
     # add the re-evaluated solutions to the new archive
-    new_archive.add(
-        np.ones((solutions.shape[0], 1)),
-        all_objs,
-        all_measures,
-        all_metadata
-    )
+    new_archive.add(np.ones((solutions.shape[0], 1)), all_objs, all_measures,
+                    all_metadata)
     print(f'Re-evaluated PGAME Archive \n'
           f'Coverage: {new_archive.stats.coverage} \n'
           f'Max fitness: {new_archive.stats.obj_max} \n'
@@ -250,7 +297,8 @@ def reevaluate_pgame_archive(env_cfg, archive_df=None, solution_batch=None, save
           f'QD Score: {new_archive.offset_qd_score}')
 
     if save_path is not None:
-        archive_fp = os.path.join(save_path, f'{env_cfg.env_name}_reeval_archive.pkl')
+        archive_fp = os.path.join(save_path,
+                                  f'{env_cfg.env_name}_reeval_archive.pkl')
         with open(archive_fp, 'wb') as f:
             pickle.dump(new_archive, f)
 
@@ -286,7 +334,8 @@ def pgame_repertoire_to_pyribs_archive(cp_path, env_cfg, save_path=None):
         fake_params = policy_network.init(subkey, fake_batch)
 
         _, reconstruction_fn = ravel_pytree(fake_params)
-        repertoire = MapElitesRepertoire.load(reconstruction_fn=reconstruction_fn, path=cp_path)
+        repertoire = MapElitesRepertoire.load(
+            reconstruction_fn=reconstruction_fn, path=cp_path)
         return repertoire
 
     repertoire = load_archive(random_key)
@@ -295,11 +344,14 @@ def pgame_repertoire_to_pyribs_archive(cp_path, env_cfg, save_path=None):
     flax_params = repertoire.genotypes['params']
 
     def flax_to_torch_model(model_ind):
-        pytorch_model = PGAMEActor(obs_shape=env.observation_size, action_shape=(env.action_size,))
+        pytorch_model = PGAMEActor(obs_shape=env.observation_size,
+                                   action_shape=(env.action_size,))
         pytorch_params = dict(pytorch_model.named_parameters())
         for i in range(len(flax_params)):
-            pytorch_params[f'actor_mean.{2*i}.weight'].data = torch.from_numpy(flax_params[f'Dense_{i}']['kernel'][model_idx]._value.T.copy())
-            pytorch_params[f'actor_mean.{2*i}.bias'].data = torch.from_numpy(flax_params[f'Dense_{i}']['bias'][model_idx]._value.T.copy())
+            pytorch_params[f'actor_mean.{2*i}.weight'].data = torch.from_numpy(
+                flax_params[f'Dense_{i}']['kernel'][model_idx]._value.T.copy())
+            pytorch_params[f'actor_mean.{2*i}.bias'].data = torch.from_numpy(
+                flax_params[f'Dense_{i}']['bias'][model_idx]._value.T.copy())
         return pytorch_model.serialize()
 
     solution_batch = []
@@ -353,10 +405,21 @@ def evaluate_pga_me_archive(archive_dir):
 
     solutions = pgame_archive.to_numpy()[:, env_cfg.num_dims + 2:]
 
-    agents = [PGAMEActor(obs_shape[0], action_shape).deserialize(solution).to(device) for solution in solutions]
-    cfg = AttrDict(
-        {'normalize_obs': False, 'normalize_rewards': False, 'num_envs': solutions.shape[0], 'num_dims': env_cfg.num_dims})
-    vec_agent = VectorizedActor(cfg, agents, PGAMEActor, obs_shape=obs_shape, action_shape=action_shape).to(device)
+    agents = [
+        PGAMEActor(obs_shape[0], action_shape).deserialize(solution).to(device)
+        for solution in solutions
+    ]
+    cfg = AttrDict({
+        'normalize_obs': False,
+        'normalize_rewards': False,
+        'num_envs': solutions.shape[0],
+        'num_dims': env_cfg.num_dims
+    })
+    vec_agent = VectorizedActor(cfg,
+                                agents,
+                                PGAMEActor,
+                                obs_shape=obs_shape,
+                                action_shape=action_shape).to(device)
     objs, measures = evaluate(vec_agent, vec_env, env_cfg.num_dims)
 
     archive_dims = [100, 100]

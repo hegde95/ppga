@@ -1,6 +1,5 @@
 """Provides the Scheduler."""
 import numpy as np
-
 from ribs2.emitters import DQDEmitterBase
 
 
@@ -24,19 +23,19 @@ class Scheduler:
         instances of ``EmitterClass``.
 
     Args:
-        archive (ribs2.archives.ArchiveBase): An archive object, e.g. one
-            selected from :mod:`ribs2.archives`.
-        emitters (list of ribs2.archives.EmitterBase): A list of emitter objects,
-            e.g. :class:`ribs2.emitters.GaussianEmitter`.
+        archive (ribs.archives.ArchiveBase): An archive object, e.g. one
+            selected from :mod:`ribs.archives`.
+        emitters (list of ribs.emitters.EmitterBase): A list of emitter objects,
+            e.g. :class:`ribs.emitters.GaussianEmitter`.
         add_mode (str): Indicates how solutions should be added to the archive.
             The default is "batch", which adds all solutions with one call to
-            :meth:`~ribs2.archives.ArchiveBase.add`. Alternatively, use "single"
+            :meth:`~ribs.archives.ArchiveBase.add`. Alternatively, use "single"
             to add the solutions one at a time with
-            :meth:`~ribs2.archives.ArchiveBase.add_single`. "single" mode is
+            :meth:`~ribs.archives.ArchiveBase.add_single`. "single" mode is
             included for legacy reasons, as it was the only mode of operation in
             pyribs 0.4.0 and before. We highly recommend using "batch" mode
             since it is significantly faster.
-        result_archive (ribs2.archives.ArchiveBase): In some algorithms, such as
+        result_archive (ribs.archives.ArchiveBase): In some algorithms, such as
             CMA-MAE, the archive does not store all the best-performing
             solutions. The `result_archive` is a secondary archive where we can
             store all the best-performing solutions.
@@ -101,19 +100,19 @@ class Scheduler:
 
     @property
     def archive(self):
-        """ribs2.archives.ArchiveBase: Archive for storing solutions found in
+        """ribs.archives.ArchiveBase: Archive for storing solutions found in
         this scheduler."""
         return self._archive
 
     @property
     def emitters(self):
-        """list of ribs2.archives.EmitterBase: Emitters for generating solutions
+        """list of ribs.emitters.EmitterBase: Emitters for generating solutions
         in this scheduler."""
         return self._emitters
 
     @property
     def result_archive(self):
-        """ribs2.archives.ArchiveBase: Another archive for storing solutions
+        """ribs.archives.ArchiveBase: Another archive for storing solutions
         found in this optimizer.
         If `result_archive` was not passed to the constructor, this property is
         the same as :attr:`archive`.

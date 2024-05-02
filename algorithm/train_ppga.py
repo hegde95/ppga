@@ -12,8 +12,8 @@ from attrdict import AttrDict
 from envs.brax_custom import reward_offset
 from envs.brax_custom.brax_env import make_vec_env_brax
 from models.actor_critic import Actor
-from ribs.archives import GridArchive
-from ribs.emitters import PPGAEmitter
+from qd.archives import GridArchive
+from ribs2.emitters import PPGAEmitter
 from ribs.schedulers import Scheduler
 from RL.ppo import PPO
 from utils.archive_utils import (archive_df_to_archive,
@@ -316,7 +316,7 @@ def create_scheduler(cfg: AttrDict,
     log.debug(f'Environment {cfg.env_name}, {action_dim=}, {obs_dim=}')
     batch_size = cfg.popsize
     # empirically calculated for brax envs to make the qd-score strictly positive
-    qd_offset = reward_offset[cfg.env_name]
+    cur_reward_offset = reward_offset[cfg.env_name]
 
     if initial_sol is None:
         initial_agent = Actor(obs_shape, action_shape, cfg.normalize_obs,
@@ -351,30 +351,32 @@ def create_scheduler(cfg: AttrDict,
                                         learning_rate=archive_learning_rate,
                                         threshold_min=threshold_min,
                                         seed=cfg.seed,
-                                        qd_offset=qd_offset)
+                                        reward_offset=cur_reward_offset)
 
         if use_result_archive:
-            result_archive = archive_df_to_archive(archive_df,
-                                                   solution_dim=solution_dim,
-                                                   dims=archive_dims,
-                                                   ranges=bounds,
-                                                   seed=cfg.seed,
-                                                   qd_offset=qd_offset)
+            result_archive = archive_df_to_archive(
+                archive_df,
+                solution_dim=solution_dim,
+                dims=archive_dims,
+                ranges=bounds,
+                seed=cfg.seed,
+                reward_offset=cur_reward_offset)
     else:
+        # TODO: add metadata field
         archive = GridArchive(solution_dim=solution_dim,
                               dims=archive_dims,
                               ranges=bounds,
                               learning_rate=archive_learning_rate,
                               threshold_min=threshold_min,
                               seed=cfg.seed,
-                              qd_offset=qd_offset)
+                              reward_offset=cur_reward_offset)
 
         if use_result_archive:
             result_archive = GridArchive(solution_dim=solution_dim,
                                          dims=archive_dims,
                                          ranges=bounds,
                                          seed=cfg.seed,
-                                         qd_offset=qd_offset)
+                                         reward_offset=cur_reward_offset)
 
     ppo = PPO(cfg)
 
@@ -424,7 +426,10 @@ def create_scheduler(cfg: AttrDict,
         f"dims {archive_dims}. Min threshold is {threshold_min}. Restart rule is {cfg.restart_rule}"
     )
 
-    return Scheduler(archive, emitters, result_archive, add_mode=mode)
+    return Scheduler(archive,
+                     emitters,
+                     result_archive=result_archive,
+                     add_mode=mode)
 
 
 def train_ppga(cfg: AttrDict, vec_env):
@@ -533,7 +538,7 @@ def train_ppga(cfg: AttrDict, vec_env):
         best = max(best, max(objs))
 
         # return the gradients to the scheduler. Will be used for the next step
-        scheduler.tell_dqd(objs, measures, jacobian, metadata)
+        scheduler.tell_dqd(objs, measures, jacobian, metadata=metadata)
 
         # using grads from previous step, sample a batch of branched solution points and evaluate their f and m
         branched_sols = scheduler.ask()
@@ -568,7 +573,7 @@ def train_ppga(cfg: AttrDict, vec_env):
         best = max(best, max(objs))
 
         # return the evals to the scheduler. Will be used to update the search distribution in xnes
-        restarted = scheduler.tell(objs, measures, metadata)
+        restarted = scheduler.tell(objs, measures, metadata=metadata)
         if restarted:
             log.debug("Emitter restarted. Changing the mean agent...")
             mean_soln_point = scheduler.emitters[0].theta

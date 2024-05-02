@@ -52,7 +52,7 @@ _rank_args = f"""
 Args:
     emitter (ribs2.emitters.EmitterBase): Emitter that this ``ranker``
         object belongs to.
-    archive (ribs2.archives.ArchiveBase): Archive used by ``emitter``
+    archive (ribs.archives.ArchiveBase): Archive used by ``emitter``
         when creating and inserting solutions.
     rng (numpy.random.Generator): A random number generator.
 {_args.solution_batch}
@@ -75,7 +75,7 @@ _reset_args = """
 Args:
     emitter (ribs2.emitters.EmitterBase): Emitter that this ``ranker``
         object belongs to.
-    archive (ribs2.archives.ArchiveBase): Archive used by ``emitter``
+    archive (ribs.archives.ArchiveBase): Archive used by ``emitter``
         when creating and inserting solutions.
     rng (numpy.random.Generator): A random number generator.
 """

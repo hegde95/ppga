@@ -18,9 +18,9 @@ class EvolutionStrategyEmitter(EmitterBase):
     the mean and covariance of the distribution.
 
     Args:
-        archive (ribs2.archives.ArchiveBase): An archive to use when creating and
+        archive (ribs.archives.ArchiveBase): An archive to use when creating and
             inserting solutions. For instance, this can be
-            :class:`ribs2.archives.GridArchive`.
+            :class:`ribs.archives.GridArchive`.
         x0 (np.ndarray): Initial solution. Must be 1-dimensional.
         sigma0 (float): Initial step size / standard deviation.
         selection_rule ("mu" or "filter"): Method for selecting parents in
@@ -188,7 +188,7 @@ class EvolutionStrategyEmitter(EmitterBase):
                 archive's :meth:`add()` method.
             value_batch (numpy.ndarray): 1D array of floats returned by a series
                 of calls to archive's :meth:`add()` method. For what these
-                floats represent, refer to :meth:`ribs2.archives.add()`.
+                floats represent, refer to :meth:`ribs.archives.add()`.
             metadata_batch (numpy.ndarray): 1D object array containing a
                 metadata object for each solution.
         """
