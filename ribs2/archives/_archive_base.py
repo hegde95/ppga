@@ -5,11 +5,11 @@ from collections import OrderedDict
 import numpy as np
 from numpy_groupies import aggregate_nb as aggregate
 
-from ribs._utils import (check_1d_shape, check_batch_shape, check_finite,
+from ribs2._utils import (check_1d_shape, check_batch_shape, check_finite,
                          check_is_1d, check_solution_batch_dim)
-from ribs.archives._archive_data_frame import ArchiveDataFrame
-from ribs.archives._archive_stats import ArchiveStats
-from ribs.archives._elite import Elite, EliteBatch
+from ribs2.archives._archive_data_frame import ArchiveDataFrame
+from ribs2.archives._archive_stats import ArchiveStats
+from ribs2.archives._elite import Elite, EliteBatch
 
 _ADD_WARNING = (" Note that starting in pyribs 0.5.0, add() takes in a "
                 "batch of solutions unlike in pyribs 0.4.0, where add() "
@@ -98,7 +98,7 @@ class ArchiveBase(ABC):  # pylint: disable = too-many-instance-attributes
       appropriate arguments.
     - :meth:`index_of`: Returns integer indices into the arrays above when
       given a batch of measures. Usually, each index has a meaning, e.g. in
-      :class:`~ribs.archives.CVTArchive` it is the index of a centroid.
+      :class:`~ribs2.archives.CVTArchive` it is the index of a centroid.
       Documentation for this method should describe the meaning of the index.
 
     .. note:: Attributes beginning with an underscore are only intended to be

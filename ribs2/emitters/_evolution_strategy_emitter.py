@@ -3,9 +3,9 @@ import itertools
 
 import numpy as np
 
-from ribs.emitters._emitter_base import EmitterBase
-from ribs.emitters.opt import CMAEvolutionStrategy
-from ribs.emitters.rankers import _get_ranker
+from ribs2.emitters._emitter_base import EmitterBase
+from ribs2.emitters.opt import CMAEvolutionStrategy
+from ribs2.emitters.rankers import _get_ranker
 
 
 class EvolutionStrategyEmitter(EmitterBase):
@@ -18,9 +18,9 @@ class EvolutionStrategyEmitter(EmitterBase):
     the mean and covariance of the distribution.
 
     Args:
-        archive (ribs.archives.ArchiveBase): An archive to use when creating and
+        archive (ribs2.archives.ArchiveBase): An archive to use when creating and
             inserting solutions. For instance, this can be
-            :class:`ribs.archives.GridArchive`.
+            :class:`ribs2.archives.GridArchive`.
         x0 (np.ndarray): Initial solution. Must be 1-dimensional.
         sigma0 (float): Initial step size / standard deviation.
         selection_rule ("mu" or "filter"): Method for selecting parents in
@@ -32,7 +32,7 @@ class EvolutionStrategyEmitter(EmitterBase):
             environment. This parameter may be a callable (e.g. a class or a
             lambda function) that takes in no parameters and returns an instance
             of :class:`RankerBase`, or it may be a full or abbreviated ranker
-            name as described in :meth:`ribs.emitters.rankers.get_ranker`.
+            name as described in :meth:`ribs2.emitters.rankers.get_ranker`.
         restart_rule (int, "no_improvement", and "basic"): Method to use when
             checking for restarts. If given an integer, then the emitter will
             restart after this many iterations, where each iteration is a call
@@ -184,11 +184,11 @@ class EvolutionStrategyEmitter(EmitterBase):
                 dimension) array with the measure space coordinates of each
                 solution.
             status_batch (numpy.ndarray): 1D array of
-                :class:`ribs.archive.AddStatus` returned by a series of calls to
+                :class:`ribs2.archive.AddStatus` returned by a series of calls to
                 archive's :meth:`add()` method.
             value_batch (numpy.ndarray): 1D array of floats returned by a series
                 of calls to archive's :meth:`add()` method. For what these
-                floats represent, refer to :meth:`ribs.archives.add()`.
+                floats represent, refer to :meth:`ribs2.archives.add()`.
             metadata_batch (numpy.ndarray): 1D object array containing a
                 metadata object for each solution.
         """

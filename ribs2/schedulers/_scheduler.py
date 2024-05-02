@@ -1,6 +1,7 @@
 """Provides the Scheduler."""
 import numpy as np
-from ribs.emitters import DQDEmitterBase
+
+from ribs2.emitters import DQDEmitterBase
 
 
 class Scheduler:
@@ -23,19 +24,19 @@ class Scheduler:
         instances of ``EmitterClass``.
 
     Args:
-        archive (ribs.archives.ArchiveBase): An archive object, e.g. one
-            selected from :mod:`ribs.archives`.
-        emitters (list of ribs.archives.EmitterBase): A list of emitter objects,
-            e.g. :class:`ribs.emitters.GaussianEmitter`.
+        archive (ribs2.archives.ArchiveBase): An archive object, e.g. one
+            selected from :mod:`ribs2.archives`.
+        emitters (list of ribs2.archives.EmitterBase): A list of emitter objects,
+            e.g. :class:`ribs2.emitters.GaussianEmitter`.
         add_mode (str): Indicates how solutions should be added to the archive.
             The default is "batch", which adds all solutions with one call to
-            :meth:`~ribs.archives.ArchiveBase.add`. Alternatively, use "single"
+            :meth:`~ribs2.archives.ArchiveBase.add`. Alternatively, use "single"
             to add the solutions one at a time with
-            :meth:`~ribs.archives.ArchiveBase.add_single`. "single" mode is
+            :meth:`~ribs2.archives.ArchiveBase.add_single`. "single" mode is
             included for legacy reasons, as it was the only mode of operation in
             pyribs 0.4.0 and before. We highly recommend using "batch" mode
             since it is significantly faster.
-        result_archive (ribs.archives.ArchiveBase): In some algorithms, such as
+        result_archive (ribs2.archives.ArchiveBase): In some algorithms, such as
             CMA-MAE, the archive does not store all the best-performing
             solutions. The `result_archive` is a secondary archive where we can
             store all the best-performing solutions.
@@ -52,8 +53,7 @@ class Scheduler:
                  archive,
                  emitters,
                  result_archive=None,
-                 add_mode="batch",
-                 reward_offset=0):
+                 add_mode="batch"):
         if len(emitters) == 0:
             raise ValueError("Pass in at least one emitter to the scheduler.")
 
@@ -98,24 +98,22 @@ class Scheduler:
         self._solution_batch = []
         # The number of solutions created by each emitter.
         self._num_emitted = [None for _ in self._emitters]
-        # reward offset to make rewards positive
-        self._reward_offset = reward_offset
 
     @property
     def archive(self):
-        """ribs.archives.ArchiveBase: Archive for storing solutions found in
+        """ribs2.archives.ArchiveBase: Archive for storing solutions found in
         this scheduler."""
         return self._archive
 
     @property
     def emitters(self):
-        """list of ribs.archives.EmitterBase: Emitters for generating solutions
+        """list of ribs2.archives.EmitterBase: Emitters for generating solutions
         in this scheduler."""
         return self._emitters
 
     @property
     def result_archive(self):
-        """ribs.archives.ArchiveBase: Another archive for storing solutions
+        """ribs2.archives.ArchiveBase: Another archive for storing solutions
         found in this optimizer.
         If `result_archive` was not passed to the constructor, this property is
         the same as :attr:`archive`.
@@ -153,7 +151,7 @@ class Scheduler:
         # In case the emitters didn't return any solutions.
         self._solution_batch = np.concatenate(
             self._solution_batch, axis=0) if self._solution_batch else np.empty(
-            (0, self._solution_dim))
+                (0, self._solution_dim))
         return self._solution_batch
 
     def ask(self):
@@ -184,7 +182,7 @@ class Scheduler:
         # In case the emitters didn't return any solutions.
         self._solution_batch = np.concatenate(
             self._solution_batch, axis=0) if self._solution_batch else np.empty(
-            (0, self._solution_dim))
+                (0, self._solution_dim))
         return self._solution_batch
 
     def _check_length(self, name, array):
@@ -214,10 +212,9 @@ class Scheduler:
 
         # Add solutions to the archive.
         if self._add_mode == "batch":
-            status_batch, value_batch = self.archive.add(self._solution_batch,
-                                                         objective_batch,
-                                                         measures_batch,
-                                                         metadata_batch)
+            status_batch, value_batch = self.archive.add(
+                self._solution_batch, objective_batch, measures_batch,
+                metadata_batch)
 
             # Add solutions to result_archive.
             if self._result_archive is not None:
@@ -329,9 +326,11 @@ class Scheduler:
         for emitter, n in zip(self._emitters, self._num_emitted):
             end = pos + n
             stop_status = emitter.tell(self._solution_batch[pos:end],
-                         objective_batch[pos:end], measures_batch[pos:end],
-                         status_batch[pos:end], value_batch[pos:end],
-                         metadata_batch[pos:end])
+                                       objective_batch[pos:end],
+                                       measures_batch[pos:end],
+                                       status_batch[pos:end],
+                                       value_batch[pos:end],
+                                       metadata_batch[pos:end])
             restarted = restarted or stop_status
             pos = end
         return restarted

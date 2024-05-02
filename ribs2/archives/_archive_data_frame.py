@@ -2,7 +2,7 @@
 import numpy as np
 import pandas as pd
 
-from ribs.archives._elite import Elite
+from ribs2.archives._elite import Elite
 
 # Developer Notes:
 # - The documentation for this class is hacked -- to add new methods, manually

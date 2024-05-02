@@ -3,9 +3,9 @@
 .. autosummary::
     :toctree:
 
-    ribs.schedulers.Scheduler
+    ribs2.schedulers.Scheduler
 """
-from ribs.schedulers._scheduler import Scheduler
+from ribs2.schedulers._scheduler import Scheduler
 
 __all__ = [
     "Scheduler",

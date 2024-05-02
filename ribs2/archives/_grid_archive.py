@@ -1,8 +1,8 @@
 """Contains the GridArchive."""
 import numpy as np
 
-from ribs._utils import check_batch_shape, check_finite, check_is_1d
-from ribs.archives._archive_base import ArchiveBase
+from ribs2._utils import check_batch_shape, check_finite, check_is_1d
+from ribs2.archives._archive_base import ArchiveBase
 
 
 class GridArchive(ArchiveBase):

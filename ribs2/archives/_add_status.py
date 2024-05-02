@@ -20,7 +20,7 @@ class AddStatus(IntEnum):
         examples use :meth:`~ArchiveBase.add_single` rather than
         :meth:`~ArchiveBase.add`)::
 
-            from ribs.archives import AddStatus
+            from ribs2.archives import AddStatus
             status, _ = archive.add_single(solution, objective, measures)
             if status == AddStatus.NEW:
                 # Do something if the solution made a new elite in the archive.
@@ -28,7 +28,7 @@ class AddStatus(IntEnum):
         To check whether the solution was added to the archive, the status can
         act like a bool::
 
-            from ribs.archives import AddStatus
+            from ribs2.archives import AddStatus
             status, _ = archive.add_single(solution, objective, measures)
             if status:
                 # Do something if the solution was added to the archive.

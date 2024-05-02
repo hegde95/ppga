@@ -10,15 +10,15 @@ to these functions.
 
 .. note:: This module only works with ``ribs[visualize]`` installed. As such, it
     is not imported with ``import ribs``, and it must be explicitly imported
-    with ``import ribs.visualize``.
+    with ``import ribs2.visualize``.
 
 .. autosummary::
     :toctree:
 
-    ribs.visualize.grid_archive_heatmap
-    ribs.visualize.cvt_archive_heatmap
-    ribs.visualize.sliding_boundaries_archive_heatmap
-    ribs.visualize.parallel_axes_plot
+    ribs2.visualize.grid_archive_heatmap
+    ribs2.visualize.cvt_archive_heatmap
+    ribs2.visualize.sliding_boundaries_archive_heatmap
+    ribs2.visualize.parallel_axes_plot
 """
 import matplotlib
 import matplotlib.pyplot as plt
@@ -101,7 +101,7 @@ def grid_archive_heatmap(archive,
                          cbar="auto",
                          pcm_kwargs=None,
                          cbar_kwargs=None):
-    """Plots heatmap of a :class:`~ribs.archives.GridArchive` with 2D measure
+    """Plots heatmap of a :class:`~ribs2.archives.GridArchive` with 2D measure
     space.
 
     Essentially, we create a grid of cells and shade each cell with a color
@@ -118,8 +118,8 @@ def grid_archive_heatmap(archive,
 
             >>> import numpy as np
             >>> import matplotlib.pyplot as plt
-            >>> from ribs.archives import GridArchive
-            >>> from ribs.visualize import grid_archive_heatmap
+            >>> from ribs2.archives import GridArchive
+            >>> from ribs2.visualize import grid_archive_heatmap
             >>> # Populate the archive with the negative sphere function.
             >>> archive = GridArchive(solution_dim=2,
             ...                       dims=[20, 20],
@@ -139,7 +139,7 @@ def grid_archive_heatmap(archive,
 
 
     Args:
-        archive (GridArchive): A 2D :class:`~ribs.archives.GridArchive`.
+        archive (GridArchive): A 2D :class:`~ribs2.archives.GridArchive`.
         ax (matplotlib.axes.Axes): Axes on which to plot the heatmap.
             If ``None``, the current axis will be used.
         transpose_measures (bool): By default, the first measure in the archive
@@ -297,7 +297,7 @@ def cvt_archive_heatmap(archive,
                         vmax=None,
                         cbar="auto",
                         cbar_kwargs=None):
-    """Plots heatmap of a :class:`~ribs.archives.CVTArchive` with 2D measure
+    """Plots heatmap of a :class:`~ribs2.archives.CVTArchive` with 2D measure
     space.
 
     Essentially, we create a Voronoi diagram and shade in each cell with a
@@ -316,8 +316,8 @@ def cvt_archive_heatmap(archive,
 
             >>> import numpy as np
             >>> import matplotlib.pyplot as plt
-            >>> from ribs.archives import CVTArchive
-            >>> from ribs.visualize import cvt_archive_heatmap
+            >>> from ribs2.archives import CVTArchive
+            >>> from ribs2.visualize import cvt_archive_heatmap
             >>> # Populate the archive with the negative sphere function.
             >>> archive = CVTArchive(solution_dim=2,
             ...                      cells=100, ranges=[(-1, 1), (-1, 1)])
@@ -335,7 +335,7 @@ def cvt_archive_heatmap(archive,
             >>> plt.show()
 
     Args:
-        archive (CVTArchive): A 2D :class:`~ribs.archives.CVTArchive`.
+        archive (CVTArchive): A 2D :class:`~ribs2.archives.CVTArchive`.
         ax (matplotlib.axes.Axes): Axes on which to plot the heatmap.
             If ``None``, the current axis will be used.
         plot_centroids (bool): Whether to plot the cluster centroids.
@@ -465,10 +465,10 @@ def sliding_boundaries_archive_heatmap(archive,
                                        boundary_lw=0,
                                        vmin=None,
                                        vmax=None):
-    """Plots heatmap of a :class:`~ribs.archives.SlidingBoundariesArchive` with
+    """Plots heatmap of a :class:`~ribs2.archives.SlidingBoundariesArchive` with
     2D measure space.
 
-    Since the boundaries of :class:`ribs.archives.SlidingBoundariesArchive` are
+    Since the boundaries of :class:`ribs2.archives.SlidingBoundariesArchive` are
     dynamic, we plot the heatmap as a scatter plot, in which each marker is an
     elite and its color represents the objective value. Boundaries can
     optionally be drawn by setting ``boundary_lw`` to a positive value.
@@ -479,8 +479,8 @@ def sliding_boundaries_archive_heatmap(archive,
 
             >>> import numpy as np
             >>> import matplotlib.pyplot as plt
-            >>> from ribs.archives import SlidingBoundariesArchive
-            >>> from ribs.visualize import sliding_boundaries_archive_heatmap
+            >>> from ribs2.archives import SlidingBoundariesArchive
+            >>> from ribs2.visualize import sliding_boundaries_archive_heatmap
             >>> archive = SlidingBoundariesArchive(solution_dim=2,
             ...                                    dims=[10, 20],
             ...                                    ranges=[(-1, 1), (-1, 1)],
@@ -509,7 +509,7 @@ def sliding_boundaries_archive_heatmap(archive,
 
     Args:
         archive (SlidingBoundariesArchive): A 2D
-            :class:`~ribs.archives.SlidingBoundariesArchive`.
+            :class:`~ribs2.archives.SlidingBoundariesArchive`.
         ax (matplotlib.axes.Axes): Axes on which to plot the heatmap.
             If ``None``, the current axis will be used.
         transpose_measures (bool): By default, the first measure in the archive
@@ -627,8 +627,8 @@ def parallel_axes_plot(archive,
 
             >>> import numpy as np
             >>> import matplotlib.pyplot as plt
-            >>> from ribs.archives import GridArchive
-            >>> from ribs.visualize import parallel_axes_plot
+            >>> from ribs2.archives import GridArchive
+            >>> from ribs2.visualize import parallel_axes_plot
             >>> # Populate the archive with the negative sphere function.
             >>> archive = GridArchive(
             ...               solution_dim=3, dims=[20, 20, 20, 20, 20],

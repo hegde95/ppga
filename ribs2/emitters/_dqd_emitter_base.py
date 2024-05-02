@@ -1,7 +1,7 @@
 """Provides DQDEmitterBase."""
 from abc import abstractmethod
 
-from ribs.emitters._emitter_base import EmitterBase
+from ribs2.emitters._emitter_base import EmitterBase
 
 
 class DQDEmitterBase(EmitterBase):
@@ -48,11 +48,11 @@ class DQDEmitterBase(EmitterBase):
                 consist of the objective gradient of the solution followed by
                 the measure gradients.
             status_batch (numpy.ndarray): 1d array of
-                :class:`ribs.archive.addstatus` returned by a series of calls to
+                :class:`ribs2.archive.addstatus` returned by a series of calls to
                 archive's :meth:`add()` method.
             value_batch (numpy.ndarray): 1d array of floats returned by a series
                 of calls to archive's :meth:`add()` method. for what these
-                floats represent, refer to :meth:`ribs.archives.add()`.
+                floats represent, refer to :meth:`ribs2.archives.add()`.
             metadata_batch (numpy.ndarray): 1d object array containing a
                 metadata object for each solution.
         """

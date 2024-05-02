@@ -13,21 +13,21 @@ inherit from :class:`DQDEmitterBase`.
 .. autosummary::
     :toctree:
 
-    ribs.emitters.EvolutionStrategyEmitter
-    ribs.emitters.GradientAborescenceEmitter
-    ribs.emitters.GaussianEmitter
-    ribs.emitters.IsoLineEmitter
-    ribs.emitters.EmitterBase
-    ribs.emitters.DQDEmitterBase
+    ribs2.emitters.EvolutionStrategyEmitter
+    ribs2.emitters.GradientAborescenceEmitter
+    ribs2.emitters.GaussianEmitter
+    ribs2.emitters.IsoLineEmitter
+    ribs2.emitters.EmitterBase
+    ribs2.emitters.DQDEmitterBase
 """
-from ribs.emitters._dqd_emitter_base import DQDEmitterBase
-from ribs.emitters._emitter_base import EmitterBase
-from ribs.emitters._evolution_strategy_emitter import EvolutionStrategyEmitter
-from ribs.emitters._gaussian_emitter import GaussianEmitter
-from ribs.emitters._gradient_aborescence_emitter import \
+from ribs2.emitters._dqd_emitter_base import DQDEmitterBase
+from ribs2.emitters._emitter_base import EmitterBase
+from ribs2.emitters._evolution_strategy_emitter import EvolutionStrategyEmitter
+from ribs2.emitters._gaussian_emitter import GaussianEmitter
+from ribs2.emitters._gradient_aborescence_emitter import \
   GradientAborescenceEmitter
-from ribs.emitters._proximal_policy_gradient_arborescence_emitter import PPGAEmitter
-from ribs.emitters._iso_line_emitter import IsoLineEmitter
+from ribs2.emitters._proximal_policy_gradient_arborescence_emitter import PPGAEmitter
+from ribs2.emitters._iso_line_emitter import IsoLineEmitter
 
 __all__ = [
     "EvolutionStrategyEmitter",

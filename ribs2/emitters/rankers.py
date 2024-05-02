@@ -21,19 +21,19 @@ The supported abbreviations are:
 .. autosummary::
     :toctree:
 
-    ribs.emitters.rankers.ImprovementRanker
-    ribs.emitters.rankers.TwoStageImprovementRanker
-    ribs.emitters.rankers.RandomDirectionRanker
-    ribs.emitters.rankers.TwoStageRandomDirectionRanker
-    ribs.emitters.rankers.ObjectiveRanker
-    ribs.emitters.rankers.TwoStageObjectiveRanker
-    ribs.emitters.rankers.RankerBase
+    ribs2.emitters.rankers.ImprovementRanker
+    ribs2.emitters.rankers.TwoStageImprovementRanker
+    ribs2.emitters.rankers.RandomDirectionRanker
+    ribs2.emitters.rankers.TwoStageRandomDirectionRanker
+    ribs2.emitters.rankers.ObjectiveRanker
+    ribs2.emitters.rankers.TwoStageObjectiveRanker
+    ribs2.emitters.rankers.RankerBase
 """
 from abc import ABC, abstractmethod
 
 import numpy as np
 
-from ribs._docstrings import DocstringComponents, core_args
+from ribs2._docstrings import DocstringComponents, core_args
 
 __all__ = [
     "ImprovementRanker",
@@ -50,9 +50,9 @@ _args = DocstringComponents(core_args)
 
 _rank_args = f"""
 Args:
-    emitter (ribs.emitters.EmitterBase): Emitter that this ``ranker``
+    emitter (ribs2.emitters.EmitterBase): Emitter that this ``ranker``
         object belongs to.
-    archive (ribs.archives.ArchiveBase): Archive used by ``emitter``
+    archive (ribs2.archives.ArchiveBase): Archive used by ``emitter``
         when creating and inserting solutions.
     rng (numpy.random.Generator): A random number generator.
 {_args.solution_batch}
@@ -73,9 +73,9 @@ Returns:
 
 _reset_args = """
 Args:
-    emitter (ribs.emitters.EmitterBase): Emitter that this ``ranker``
+    emitter (ribs2.emitters.EmitterBase): Emitter that this ``ranker``
         object belongs to.
-    archive (ribs.archives.ArchiveBase): Archive used by ``emitter``
+    archive (ribs2.archives.ArchiveBase): Archive used by ``emitter``
         when creating and inserting solutions.
     rng (numpy.random.Generator): A random number generator.
 """
@@ -87,7 +87,7 @@ class RankerBase(ABC):
     Every ranker has a :meth:`rank` method that returns a list of indices
     that indicate how the solutions should be ranked and a :meth:`reset` method
     that resets the internal state of the ranker
-    (e.g. in :class:`ribs.emitters.rankers._random_direction_ranker`).
+    (e.g. in :class:`ribs2.emitters.rankers._random_direction_ranker`).
 
     Child classes are only required to override :meth:`rank`.
     """
@@ -187,7 +187,7 @@ class RandomDirectionRanker(RankerBase):
 
     To rank the solutions first by whether they were added, and then by
     the projection, refer to
-    :class:`ribs.emitters.rankers.TwoStageRandomDirectionRanker`.
+    :class:`ribs2.emitters.rankers.TwoStageRandomDirectionRanker`.
     """
 
     def __init__(self):
@@ -238,7 +238,7 @@ direction.
 
 
 class TwoStageRandomDirectionRanker(RankerBase):
-    """Similar to :class:`ribs.emitters.rankers.RandomDirectionRanker`, but the
+    """Similar to :class:`ribs2.emitters.rankers.RandomDirectionRanker`, but the
     solutions are first ranked by whether they are added, then by their
     projection onto a random direction in the archive space.
 
@@ -314,7 +314,7 @@ Ranks the solutions based on their objective values.
 
 
 class TwoStageObjectiveRanker(RankerBase):
-    """Similar to :class:`ribs.emitters.rankers.ObjectiveRanker`, but ranks
+    """Similar to :class:`ribs2.emitters.rankers.ObjectiveRanker`, but ranks
     newly added solutions before improved solutions.
 
     This ranker originates in `Fontaine 2020

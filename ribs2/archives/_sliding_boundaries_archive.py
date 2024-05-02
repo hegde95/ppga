@@ -5,9 +5,9 @@ from collections import deque
 import numpy as np
 from sortedcontainers import SortedList
 
-from ribs._utils import check_batch_shape
-from ribs.archives._archive_base import ArchiveBase
-from ribs.archives._grid_archive import GridArchive
+from ribs2._utils import check_batch_shape
+from ribs2.archives._archive_base import ArchiveBase
+from ribs2.archives._grid_archive import GridArchive
 
 
 class SolutionBuffer:
@@ -84,7 +84,7 @@ class SlidingBoundariesArchive(ArchiveBase):
 
     This archive is the container described in `Fontaine 2019
     <https://arxiv.org/abs/1904.10656>`_. Just like the
-    :class:`~ribs.archives.GridArchive`, it can be visualized as an
+    :class:`~ribs2.archives.GridArchive`, it can be visualized as an
     n-dimensional grid in the measure space that is divided into a certain
     number of cells in each dimension. Internally, this archive stores a buffer
     with the ``buffer_capacity`` most recent solutions and uses them to
