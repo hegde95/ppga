@@ -120,7 +120,7 @@ class CriticBase(nn.Module):
         arr_idx = 0
         for param in self.parameters():
             shape = tuple(param.data.shape)
-            length = np.product(shape)
+            length = np.prod(shape)
             block = array[arr_idx:arr_idx + length]
             if len(block) != length:
                 raise ValueError("Array not long enough!")
