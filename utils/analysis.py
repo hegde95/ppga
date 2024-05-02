@@ -316,7 +316,7 @@ def get_pgame_df(exp_dir, reevaluated_archive=False, save=False):
         if reevaluated_archive:
             filepath = glob.glob(subdir + '/' + '*reeval_archive*')[0]
             with open(filepath, 'rb') as f:
-                df = pickle.load(f).as_pandas()
+                df = pickle.load(f).data(return_type="pandas")
         else:
             df = pgame_checkpoint_to_objective_df(subdir)
         dataframes.append(df)
@@ -333,7 +333,7 @@ def get_ppga_df(exp_dir, reevaluated_archive=False):
         if reevaluated_archive:
             filename = glob.glob(subdir + '/' + '*reeval_archive*')[0]
             with open(filename, 'rb') as f:
-                df = pickle.load(f).as_pandas()
+                df = pickle.load(f).data(return_type="pandas")
         else:
             filename = glob.glob(subdir + '/' + 'archive_*')[0]
             df = pd.read_pickle(filename)
@@ -405,8 +405,12 @@ def load_and_eval_pgame_archive(exp_name, exp_dirs, seed, data_is_saved=False):
               f'Avg Fitness: {new_archive.stats.obj_mean} \n'
               f'QD Score: {new_archive.offset_qd_score}')
     else:
-        original_archive, pgame_sols = pgame_repertoire_to_pyribs_archive(cp_path + '/', env_cfg, save_path=save_path)
-        new_archive = reevaluate_pgame_archive(env_cfg, archive_df=original_archive.as_pandas(), save_path=save_path)
+        original_archive, pgame_sols = pgame_repertoire_to_pyribs_archive(
+            cp_path + '/', env_cfg, save_path=save_path)
+        new_archive = reevaluate_pgame_archive(
+            env_cfg,
+            archive_df=original_archive.data(return_type="pandas"),
+            save_path=save_path)
     return original_archive, new_archive
 
 

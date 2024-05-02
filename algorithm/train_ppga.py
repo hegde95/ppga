@@ -659,8 +659,7 @@ def train_ppga(cfg: AttrDict, vec_env):
             if not os.path.exists(final_cp_dir):
                 os.mkdir(final_cp_dir)
             # Save a full archive for analysis.
-            df = result_archive.as_pandas(include_solutions=True,
-                                          include_metadata=True)
+            df = result_archive.data(return_type="pandas")
             df.to_pickle(os.path.join(final_cp_dir,
                                       f"archive_df_{itr:08d}.pkl"))
 
