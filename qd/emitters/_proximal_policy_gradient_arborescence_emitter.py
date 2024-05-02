@@ -5,16 +5,16 @@ from typing import List, Optional
 import numpy as np
 import torch
 import wandb
-from ribs2.emitters._dqd_emitter_base import DQDEmitterBase
-from ribs2.emitters.opt import AdamOpt, GradientAscentOpt
 from ribs2.emitters.opt._xnes import ExponentialES
-from ribs2.emitters.rankers import _get_ranker
 from ribs.archives import ArchiveBase
+from ribs.emitters import EmitterBase
+from ribs.emitters.opt import AdamOpt, GradientAscentOpt
+from ribs.emitters.rankers import _get_ranker
 from RL.ppo import PPO
 from utils.utilities import log
 
 
-class PPGAEmitter(DQDEmitterBase):
+class PPGAEmitter(EmitterBase):
 
     def __init__(self,
                  ppo: PPO,
@@ -35,16 +35,25 @@ class PPGAEmitter(DQDEmitterBase):
                  normalize_obs: bool = True,
                  normalize_returns: bool = True,
                  adaptive_stddev: bool = True):
-        DQDEmitterBase.__init__(self, archive, len(x0), bounds)
+        EmitterBase.__init__(
+            self,
+            archive,
+            solution_dim=len(x0),
+            bounds=bounds,
+        )
+
+        self._seed_sequence = (seed if isinstance(seed, np.random.SeedSequence)
+                               else np.random.SeedSequence(seed))
+        ranker_seed, = self._seed_sequence.spawn(1)
+
         self._epsilon = epsilon
-        self._rng = np.random.default_rng(seed)
         self._x0 = np.array(x0, dtype=archive.dtype)
         self._sigma0 = sigma0
         self._grad_coefficients = None
         self._normalize_grads = normalize_grad
         self._jacobian_batch = None
-        self._ranker = _get_ranker(ranker)
-        self._ranker.reset(self, archive, self._rng)
+        self._ranker = _get_ranker(ranker, ranker_seed)
+        self._ranker.reset(self, archive)
         self.ppo = ppo
 
         assert grad_opt in [
@@ -72,7 +81,6 @@ class PPGAEmitter(DQDEmitterBase):
         # the objective.
         self._num_coefficients = archive.measure_dim + 1
 
-        self.opt_seed = seed
         self.opt_lambda = batch_size
         self.device = torch.device(
             'cuda' if torch.cuda.is_available() else 'cpu')
@@ -332,9 +340,9 @@ class PPGAEmitter(DQDEmitterBase):
                                      self.device,
                                      self._sigma0,
                                      self.opt_lambda,
-                                     seed=self.opt_seed,
+                                     seed=self._seed_sequence.spawn(1)[0],
                                      initial_bounds=self._initial_bounds)
-            self._ranker.reset(self, self.archive, self._rng)
+            self._ranker.reset(self, self.archive)
             self._restarts += 1
 
         # Increase iteration counter.
