@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from evotorch import Problem, SolutionBatch
 from evotorch.algorithms import XNES
+
 from utils.utilities import log
 
 
@@ -21,7 +22,7 @@ class ExponentialES(XNES):
             solution_length=solution_dim,
             initial_bounds=initial_bounds,
             device=device,
-            seed=self._rng.integers(0, 2_000_000_000),
+            seed=int(self._rng.integers(0, 2_000_000_000)),
         )
         XNES.__init__(
             self,
@@ -88,5 +89,4 @@ class ExponentialES(XNES):
                 ranking_values[0] - ranking_values[-1]) < 1e-12:
             log.debug(f'Fitness is too flat. Restarting...')
             return True
-
         return False

@@ -20,7 +20,7 @@ class GridArchive(ribs.archives.GridArchive):
 
         objs = self.data("objective")
         traj_lengths = np.asarray(
-            m["traj_length"] for m in self.data("metadata"))
+            [m["traj_length"] for m in self.data("metadata")])
         offset_score = np.sum(self._reward_offset * traj_lengths)
         offset_qd_score = np.sum(objs) + offset_score
 

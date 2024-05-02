@@ -1,6 +1,7 @@
 """Provides grid_archive_heatmap."""
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.patches import Circle
 from ribs.visualize._utils import (archive_heatmap_1d, retrieve_cmap, set_cbar,
                                    validate_df, validate_heatmap_visual_args)
 
