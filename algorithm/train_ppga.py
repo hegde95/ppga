@@ -344,14 +344,19 @@ def create_scheduler(cfg: AttrDict,
         log.info('Loading an existing archive dataframe...')
         with open(cfg.load_archive_from_cp, 'rb') as f:
             archive_df = pickle.load(f)
-        archive = archive_df_to_archive(archive_df,
-                                        solution_dim=solution_dim,
-                                        dims=archive_dims,
-                                        ranges=bounds,
-                                        learning_rate=archive_learning_rate,
-                                        threshold_min=threshold_min,
-                                        seed=cfg.seed,
-                                        reward_offset=cur_reward_offset)
+        archive = archive_df_to_archive(
+            archive_df,
+            solution_dim=solution_dim,
+            dims=archive_dims,
+            ranges=bounds,
+            learning_rate=archive_learning_rate,
+            threshold_min=threshold_min,
+            seed=cfg.seed,
+            reward_offset=cur_reward_offset,
+            extra_fields={
+                "metadata": ((), object),
+            },
+        )
 
         if use_result_archive:
             result_archive = archive_df_to_archive(
@@ -360,23 +365,36 @@ def create_scheduler(cfg: AttrDict,
                 dims=archive_dims,
                 ranges=bounds,
                 seed=cfg.seed,
-                reward_offset=cur_reward_offset)
+                reward_offset=cur_reward_offset,
+                extra_fields={
+                    "metadata": ((), object),
+                },
+            )
     else:
-        # TODO: add metadata field
-        archive = GridArchive(solution_dim=solution_dim,
-                              dims=archive_dims,
-                              ranges=bounds,
-                              learning_rate=archive_learning_rate,
-                              threshold_min=threshold_min,
-                              seed=cfg.seed,
-                              reward_offset=cur_reward_offset)
+        archive = GridArchive(
+            solution_dim=solution_dim,
+            dims=archive_dims,
+            ranges=bounds,
+            learning_rate=archive_learning_rate,
+            threshold_min=threshold_min,
+            seed=cfg.seed,
+            reward_offset=cur_reward_offset,
+            extra_fields={
+                "metadata": ((), object),
+            },
+        )
 
         if use_result_archive:
-            result_archive = GridArchive(solution_dim=solution_dim,
-                                         dims=archive_dims,
-                                         ranges=bounds,
-                                         seed=cfg.seed,
-                                         reward_offset=cur_reward_offset)
+            result_archive = GridArchive(
+                solution_dim=solution_dim,
+                dims=archive_dims,
+                ranges=bounds,
+                seed=cfg.seed,
+                reward_offset=cur_reward_offset,
+                extra_fields={
+                    "metadata": ((), object),
+                },
+            )
 
     ppo = PPO(cfg)
 

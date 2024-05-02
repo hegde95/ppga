@@ -209,12 +209,17 @@ def reevaluate_ppga_archive(env_cfg,
     # create a new archive
     archive_dims = [env_cfg.grid_size] * env_cfg.num_dims
     bounds = [(0., 1.0) for _ in range(env_cfg.num_dims)]
-    new_archive = GridArchive(solution_dim=1,
-                              dims=archive_dims,
-                              ranges=bounds,
-                              threshold_min=-10000,
-                              seed=env_cfg.seed,
-                              reward_offset=reward_offset[env_cfg.env_name])
+    new_archive = GridArchive(
+        solution_dim=1,
+        dims=archive_dims,
+        ranges=bounds,
+        threshold_min=-10000,
+        seed=env_cfg.seed,
+        reward_offset=reward_offset[env_cfg.env_name],
+        extra_fields={
+            "metadata": ((), object),
+        },
+    )
     # add the re-evaluated solutions to the new archive
     new_archive.add(np.ones((len(original_archive), 1)), all_objs, all_measures,
                     all_metadata)
@@ -291,12 +296,17 @@ def reevaluate_pgame_archive(env_cfg,
     # create a new archive
     archive_dims = [env_cfg.grid_size] * env_cfg.num_dims
     bounds = [(0., 1.0) for _ in range(cfg.num_dims)]
-    new_archive = GridArchive(solution_dim=1,
-                              dims=archive_dims,
-                              ranges=bounds,
-                              threshold_min=-10000,
-                              seed=env_cfg.seed,
-                              reward_offset=reward_offset[env_cfg.env_name])
+    new_archive = GridArchive(
+        solution_dim=1,
+        dims=archive_dims,
+        ranges=bounds,
+        threshold_min=-10000,
+        seed=env_cfg.seed,
+        reward_offset=reward_offset[env_cfg.env_name],
+        extra_fields={
+            "metadata": ((), object),
+        },
+    )
     # add the re-evaluated solutions to the new archive
     new_archive.add(np.ones((solutions.shape[0], 1)), all_objs, all_measures,
                     all_metadata)
@@ -375,11 +385,16 @@ def pgame_repertoire_to_pyribs_archive(cp_path, env_cfg, save_path=None):
     archive_dims = [env_cfg.grid_size] * env_cfg.num_dims
     num_dims = env_cfg.num_dims
     bounds = [(0., 1.0) for _ in range(num_dims)]
-    archive = GridArchive(solution_dim=solution_batch.shape[1],
-                          dims=archive_dims,
-                          ranges=bounds,
-                          threshold_min=-np.inf,
-                          seed=seed)
+    archive = GridArchive(
+        solution_dim=solution_batch.shape[1],
+        dims=archive_dims,
+        ranges=bounds,
+        threshold_min=-np.inf,
+        seed=seed,
+        extra_fields={
+            "metadata": ((), object),
+        },
+    )
     archive.add(solution_batch, obj_batch, measures_batch)
 
     if save_path is not None:
@@ -434,11 +449,16 @@ def evaluate_pga_me_archive(archive_dir):
 
     archive_dims = [100, 100]
     bounds = [(0., 1.0) for _ in range(env_cfg.num_dims)]
-    archive = GridArchive(solution_dim=solutions.shape[1],
-                          dims=archive_dims,
-                          ranges=bounds,
-                          threshold_min=0.0,
-                          seed=env_cfg.seed)
+    archive = GridArchive(
+        solution_dim=solutions.shape[1],
+        dims=archive_dims,
+        ranges=bounds,
+        threshold_min=0.0,
+        seed=env_cfg.seed,
+        extra_fields={
+            "metadata": ((), object),
+        },
+    )
     archive.add(solutions, objs, measures)
 
     analysis_dir = os.path.join(archive_dir, 'post_hoc_analysis')
