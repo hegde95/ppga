@@ -14,11 +14,12 @@ from envs.brax_custom.brax_env import make_vec_env_brax
 from jax._src.flatten_util import ravel_pytree
 from models.actor_critic import Actor, PGAMEActor
 from models.vectorized import VectorizedActor
+from qd.visualize import grid_archive_heatmap
 from qdax import environments
 from qdax.core.containers.mapelites_repertoire import MapElitesRepertoire
 from qdax.core.neuroevolution.networks.networks import MLP
 from ribs.archives import CVTArchive, GridArchive
-from ribs.visualize import cvt_archive_heatmap, grid_archive_heatmap
+from ribs.visualize import cvt_archive_heatmap
 
 
 def save_heatmap(archive,
@@ -33,14 +34,23 @@ def save_heatmap(archive,
         force: the direction that the emitter is being pushed towards. Determined by the gradient coefficients of
         the mean solution point
     """
+    kwargs = {}
+    if len(archive) == 0:
+        # Default when archive is empty.
+        kwargs["vmin"] = 0.0
+        kwargs["vmax"] = 100.0
+
     if isinstance(archive, GridArchive):
         plt.figure(figsize=(8, 6))
-        grid_archive_heatmap(archive, emitter_loc=emitter_loc, forces=forces)
+        grid_archive_heatmap(archive,
+                             emitter_loc=emitter_loc,
+                             forces=forces,
+                             **kwargs)
         plt.tight_layout()
         plt.savefig(heatmap_path)
     elif isinstance(archive, CVTArchive):
         plt.figure(figsize=(16, 12))
-        cvt_archive_heatmap(archive)
+        cvt_archive_heatmap(archive, **kwargs)
         plt.tight_layout()
         plt.savefig(heatmap_path)
     plt.close('all')
