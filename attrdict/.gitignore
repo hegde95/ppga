@@ -1,0 +1,7 @@
+.coverage
+*.pyc
+MANIFEST
+build/*
+dist/*
+.tox
+attrdict.egg-info/*
