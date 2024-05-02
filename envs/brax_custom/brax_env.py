@@ -7,7 +7,9 @@ from brax.envs import to_torch
 from jax.dlpack import to_dlpack
 
 import torch
-v = torch.ones(1, device='cuda')  # init torch cuda before jax
+
+v = torch.ones(1, device='cuda' if torch.cuda.is_available() else
+               'cpu')  # init torch cuda before jax
 
 _to_custom_env = {
     'ant': {'custom_env_name': 'brax_custom-ant-v0',

@@ -3,3 +3,6 @@ __pycache__/
 env/
 build/
 *.egg-info/
+log.txt
+wandb/
+experiments/

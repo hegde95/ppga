@@ -73,9 +73,12 @@ class PPGAEmitter(DQDEmitterBase):
 
         self.opt_seed = seed
         self.opt_lambda = batch_size
-        self.device = torch.device('cuda')
-        self._initial_bounds = ([-2.0] * (archive.measure_dim + 1), [2.0] * (archive.measure_dim + 1))
-        self._initial_bounds[0][0] = 0.0  # restrict on-restart sampling of grad f coefficients to be [0.0, 2.0]
+        self.device = torch.device(
+            'cuda' if torch.cuda.is_available() else 'cpu')
+        self._initial_bounds = ([-2.0] * (archive.measure_dim + 1),
+                                [2.0] * (archive.measure_dim + 1))
+        self._initial_bounds[0][
+            0] = 0.0  # restrict on-restart sampling of grad f coefficients to be [0.0, 2.0]
         self.opt = ExponentialES(solution_dim=self._num_coefficients,
                                  device=self.device,
                                  sigma0=sigma0,

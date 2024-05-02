@@ -18,6 +18,8 @@ wandb
 evotorch==0.3.0
 colorlog
 
+qdax
+
 # Since attrdict has been deprecated, we need a patched local version.
 -e ./attrdict
 
