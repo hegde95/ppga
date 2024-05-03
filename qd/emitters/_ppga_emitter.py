@@ -298,8 +298,10 @@ class PPGAEmitter(EmitterBase):
         indices, ranking_values = self._ranker.rank(self, self.archive, data,
                                                     add_info)
 
+        # Select the number of parents.
         num_parents = self._batch_size
 
+        # Record metrics.
         value_batch_parents = add_info["value"][indices][:num_parents]
         mean_value = np.mean(value_batch_parents)
         max_value = np.max(add_info["value"])
@@ -312,10 +314,13 @@ class PPGAEmitter(EmitterBase):
                 'QD/new_sols': new_sols
             })
 
+        # Increase iteration counter.
+        self._itrs += 1
+
         # Update Evolution Strategy.
         self.opt.tell(add_info["value"])  # XNES
 
-        # Check for reset and maybe reset
+        # Check for reset and maybe reset.
         stop_status = self.opt.check_stop(
             ranking_values) or self._check_restart(new_sols)
         if stop_status:
@@ -342,8 +347,5 @@ class PPGAEmitter(EmitterBase):
 
             self._ranker.reset(self, self.archive)
             self._restarts += 1
-
-        # Increase iteration counter.
-        self._itrs += 1
 
         return stop_status
