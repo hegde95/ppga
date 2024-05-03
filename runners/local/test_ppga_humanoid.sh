@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
+# Runs a small version of PPGA on humanoid for testing.
 
 ENV_NAME="humanoid"
 GRID_SIZE=50  # number of cells per archive dimension
 SEED=1111
-
 
 RUN_NAME="paper_ppga_"$ENV_NAME"_seed_"$SEED
 echo $RUN_NAME
@@ -23,14 +23,14 @@ python -m algorithm.train_ppga --env_name=$ENV_NAME \
                                 --adaptive_stddev=False \
                                 --clip_obs_rew=True \
                                 --wandb_run_name=$RUN_NAME\
-                                --popsize=300 \
-                                --env_batch_size=3000 \
+                                --popsize=5 \
+                                --env_batch_size=15 \
                                 --learning_rate=0.0003 \
                                 --vf_coef=2 \
                                 --entropy_coef=0.0 \
                                 --target_kl=0.008 \
                                 --max_grad_norm=1 \
-                                --total_iterations=2000 \
+                                --total_iterations=2 \
                                 --dqd_algorithm=cma_maega \
                                 --sigma0=0.5 \
                                 --restart_rule=no_improvement \
