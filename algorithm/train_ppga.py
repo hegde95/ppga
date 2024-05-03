@@ -594,8 +594,8 @@ def train_ppga(cfg: AttrDict, vec_env):
         best = max(best, max(objs))
 
         # return the evals to the scheduler. Will be used to update the search distribution in xnes
-        restarted = scheduler.tell(objs, measures, metadata=metadata)
-        if restarted:
+        scheduler.tell(objs, measures, metadata=metadata)
+        if scheduler.emitters[0].last_stop_status:  # Indicates restart.
             log.debug("Emitter restarted. Changing the mean agent...")
             mean_soln_point = scheduler.emitters[0].theta
             mean_agent = Actor(
@@ -633,7 +633,10 @@ def train_ppga(cfg: AttrDict, vec_env):
         trained_mean_agent = ppo.agents[0]
         scheduler.emitters[0].update_theta(trained_mean_agent.serialize())
 
-        # update the obs and return normalizers in the scheduler
+        # Update the obs and return normalizers in the scheduler.
+        #
+        # Note: If the emitter restarts on the first iteration, it will fail
+        # because the normalizers are only set here.
         if cfg.normalize_obs:
             scheduler.emitters[
                 0].mean_agent_obs_normalizer = trained_mean_agent.obs_normalizer

@@ -90,6 +90,12 @@ class PPGAEmitter(EmitterBase):
                         seed=seed,
                         initial_bounds=self._initial_bounds)
 
+        # Indicates if the emitter just restarted.
+        #
+        # TODO: Turn into property or create more elegant mechanism for
+        # production.
+        self.last_stop_status = False
+
         self._batch_size = self.opt.batch_size
         self._restarts = 0
         self._itrs = 0
@@ -321,12 +327,15 @@ class PPGAEmitter(EmitterBase):
         self.opt.tell(add_info["value"])  # XNES
 
         # Check for reset and maybe reset.
-        stop_status = self.opt.check_stop(
-            ranking_values) or self._check_restart(new_sols)
+        stop_status = (self.opt.check_stop(ranking_values) or
+                       self._check_restart(new_sols))
+        self.last_stop_status = stop_status
+
         if stop_status:
             new_elite = self.archive.sample_elites(1)
-            new_theta, measures, obj = new_elite.solution_batch[
-                0], new_elite.measures_batch[0], new_elite.objective_batch[0]
+            new_theta, measures, obj = (new_elite["solution"][0],
+                                        new_elite["measures"][0],
+                                        new_elite["objective"][0])
             log.debug(
                 f'XNES is restarting with a new solution whose measures are {measures} and objective is {obj}'
             )
@@ -347,5 +356,3 @@ class PPGAEmitter(EmitterBase):
 
             self._ranker.reset(self, self.archive)
             self._restarts += 1
-
-        return stop_status
