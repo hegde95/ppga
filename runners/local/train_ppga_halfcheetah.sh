@@ -10,7 +10,8 @@ echo $RUN_NAME
 python -m algorithm.train_ppga --env_name=$ENV_NAME \
                                 --rollout_length=128 \
                                 --use_wandb=True \
-                                --wandb_group=paper \
+                                --wandb_group=btjanaka \
+                                --wandb_project=ppga \
                                 --num_dims=2 \
                                 --seed=$SEED \
                                 --anneal_lr=False \
