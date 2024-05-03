@@ -10,7 +10,7 @@ from ribs.emitters import EmitterBase
 from ribs.emitters.opt import AdamOpt, GradientAscentOpt
 from ribs.emitters.rankers import _get_ranker
 
-from qd.emitters.opt import ExponentialES
+from qd.emitters.opt import XNES
 from RL.ppo import PPO
 from utils.utilities import log
 
@@ -49,7 +49,6 @@ class PPGAEmitter(EmitterBase):
         self._epsilon = epsilon
         self._x0 = np.array(x0, dtype=archive.dtype)
         self._sigma0 = sigma0
-        self._grad_coefficients = None
         self._normalize_grads = normalize_grad
         self._jacobian_batch = None
         self._ranker = _get_ranker(ranker, ranker_seed)
@@ -78,21 +77,20 @@ class PPGAEmitter(EmitterBase):
         # the objective.
         self._num_coefficients = archive.measure_dim + 1
 
-        self.opt_lambda = batch_size
         self.device = torch.device(
             'cuda' if torch.cuda.is_available() else 'cpu')
         self._initial_bounds = ([-2.0] * (archive.measure_dim + 1),
                                 [2.0] * (archive.measure_dim + 1))
         self._initial_bounds[0][
             0] = 0.0  # restrict on-restart sampling of grad f coefficients to be [0.0, 2.0]
-        self.opt = ExponentialES(solution_dim=self._num_coefficients,
-                                 device=self.device,
-                                 sigma0=sigma0,
-                                 popsize=self.opt_lambda,
-                                 seed=seed,
-                                 initial_bounds=self._initial_bounds)
+        self.opt = XNES(solution_dim=self._num_coefficients,
+                        device=self.device,
+                        sigma0=sigma0,
+                        batch_size=batch_size,
+                        seed=seed,
+                        initial_bounds=self._initial_bounds)
 
-        self._batch_size = batch_size
+        self._batch_size = self.opt.batch_size
         self._restarts = 0
         self._itrs = 0
         self._step_size = step_size
@@ -172,23 +170,29 @@ class PPGAEmitter(EmitterBase):
         return self._grad_opt.theta[None]
 
     def ask(self):
-        """Samples new solutions from a gradient aborescence parameterized by a
+        """Samples new solutions from a gradient arborescence parameterized by a
         multivariate Gaussian distribution.
 
         The multivariate Gaussian is parameterized by the evolution strategy
-        optimizer ``self.opt``.
+        optimizer ``self._opt``.
 
-        Note that this method returns `batch_size - 1` solution as one solution
-        is returned via ask_dqd.
+        This method returns ``batch_size`` solutions, even though one solution
+        is returned via ``ask_dqd``.
 
         Returns:
-            (batch_size, :attr:`solution_dim`) array -- a batch of new solutions
-            to evaluate.
+            (:attr:`batch_size`, :attr:`solution_dim`) array -- a batch of new
+            solutions to evaluate.
+        Raises:
+            RuntimeError: This method was called without first passing gradients
+                with calls to ask_dqd() and tell_dqd().
         """
-        self._grad_coefficients = self.opt.ask()
-        noise = np.expand_dims(self._grad_coefficients, axis=2)
-        return self._grad_opt.theta + np.sum(
-            np.multiply(self._jacobian_batch, noise), axis=1)
+        if self._jacobian_batch is None:
+            raise RuntimeError("Please call ask_dqd() and tell_dqd() "
+                               "before calling ask().")
+
+        grad_coeffs = self.opt.ask()[:, :, None]
+        return (self._grad_opt.theta +
+                np.sum(self._jacobian_batch * grad_coeffs, axis=1))
 
     def _check_restart(self, num_parents):
         """Emitter-side checks for restarting the optimizer.
@@ -309,10 +313,6 @@ class PPGAEmitter(EmitterBase):
             })
 
         # Update Evolution Strategy.
-        coeffs, coeff_rankings = (self._grad_coefficients[indices],
-                                  ranking_values[indices])
-        coeffs, coeff_rankings = (coeffs[:num_parents],
-                                  coeff_rankings[:num_parents])
         self.opt.tell(add_info["value"])  # XNES
 
         # Check for reset and maybe reset
@@ -333,15 +333,17 @@ class PPGAEmitter(EmitterBase):
                     data["metadata"][0]['return_normalizer'])
 
             self._grad_opt.theta = new_theta
-            self.opt = ExponentialES(self._num_coefficients,
-                                     self.device,
-                                     self._sigma0,
-                                     self.opt_lambda,
-                                     seed=self._seed_sequence.spawn(1)[0],
-                                     initial_bounds=self._initial_bounds)
+            self.opt = XNES(solution_dim=self._num_coefficients,
+                            device=self.device,
+                            sigma0=self._sigma0,
+                            batch_size=self._batch_size,
+                            seed=self._seed_sequence.spawn(1)[0],
+                            initial_bounds=self._initial_bounds)
+
             self._ranker.reset(self, self.archive)
             self._restarts += 1
 
         # Increase iteration counter.
         self._itrs += 1
+
         return stop_status

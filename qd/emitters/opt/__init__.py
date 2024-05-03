@@ -1,2 +1,2 @@
 """Optimizers."""
-from qd.emitters.opt._xnes import ExponentialES
+from qd.emitters.opt._xnes import XNES

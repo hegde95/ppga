@@ -1,20 +1,21 @@
+import evotorch.algorithms
 import numpy as np
 import torch
 from evotorch import Problem, SolutionBatch
-from evotorch.algorithms import XNES
 
 from utils.utilities import log
 
 
-class ExponentialES(XNES):
+class XNES(evotorch.algorithms.XNES):
 
     def __init__(self,
                  solution_dim,
                  device,
                  sigma0,
-                 popsize,
-                 seed,
+                 batch_size,
+                 seed=None,
                  initial_bounds=None):
+        self.batch_size = batch_size
         self._rng = np.random.default_rng(seed)
 
         problem = Problem(
@@ -24,11 +25,11 @@ class ExponentialES(XNES):
             device=device,
             seed=int(self._rng.integers(0, 2_000_000_000)),
         )
-        XNES.__init__(
+        evotorch.algorithms.XNES.__init__(
             self,
             problem,
             stdev_init=sigma0,
-            popsize=popsize,
+            popsize=batch_size,
         )
 
         self._first_iter = True
@@ -87,6 +88,7 @@ class ExponentialES(XNES):
         # Fitness is too flat (only applies if there are at least 2 parents).
         if len(ranking_values) >= 2 and np.linalg.norm(
                 ranking_values[0] - ranking_values[-1]) < 1e-12:
-            log.debug(f'Fitness is too flat. Restarting...')
+            log.debug('Fitness is too flat. Restarting...')
             return True
+
         return False
