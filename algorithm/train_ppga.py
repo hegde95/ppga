@@ -19,7 +19,6 @@ from qd.emitters import PPGAEmitter
 from RL.ppo import PPO
 from utils.archive_utils import (archive_df_to_archive,
                                  load_scheduler_from_checkpoint, save_heatmap)
-from utils.normalize import ObsNormalizer, ReturnNormalizer
 from utils.utilities import (config_wandb, get_checkpoints, log, save_cfg,
                              set_file_handler)
 
@@ -282,8 +281,7 @@ def parse_args():
     )
 
     args = parser.parse_args()
-    cfg = AttrDict(vars(args))
-    return cfg
+    return AttrDict(vars(args))
 
 
 def save_scheduler(scheduler, save_path):
@@ -724,7 +722,7 @@ def train_ppga(cfg: AttrDict, vec_env):
                 })
 
 
-if __name__ == '__main__':
+def main():
     cfg = parse_args()
     cfg.num_emitters = 1
 
@@ -757,3 +755,7 @@ if __name__ == '__main__':
             'safety of recovering from a potential crash, it is recommended that you enable save_scheduler.'
         )
     train_ppga(cfg, vec_env)
+
+
+if __name__ == '__main__':
+    main()
