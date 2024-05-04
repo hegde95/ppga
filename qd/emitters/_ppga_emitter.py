@@ -341,10 +341,10 @@ class PPGAEmitter(EmitterBase):
             )
             if self._normalize_obs:
                 self.mean_agent_obs_normalizer.load_state_dict(
-                    data["metadata"][0]['obs_normalizer'])
+                    new_elite["metadata"][0]['obs_normalizer'])
             if self._normalize_returns:
                 self._mean_agent_return_normalizer.load_state_dict(
-                    data["metadata"][0]['return_normalizer'])
+                    new_elite["metadata"][0]['return_normalizer'])
 
             self._grad_opt.theta = new_theta
             self.opt = XNES(solution_dim=self._num_coefficients,
