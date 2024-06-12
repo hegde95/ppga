@@ -1,18 +1,19 @@
+import glob
+import json
 import logging
+import os
+from collections import OrderedDict
 
+import matplotlib.axis as maxis
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas
-import wandb
-import os
 import torch
-import glob
-import json
-import matplotlib.axis as maxis
-from attrdict import AttrDict
+import wandb
 from colorlog import ColoredFormatter
 from matplotlib.pyplot import Axes
-from collections import OrderedDict
+
+from attrdict import AttrDict
 
 ch = logging.StreamHandler()
 ch.setLevel(logging.DEBUG)
@@ -30,8 +31,7 @@ formatter = ColoredFormatter(
         'CRITICAL': 'red,bg_white',
     },
     secondary_log_colors={},
-    style='%'
-)
+    style='%')
 ch.setFormatter(formatter)
 
 fh = logging.FileHandler('log.txt')
@@ -59,7 +59,12 @@ def set_file_handler(logdir):
 
 def config_wandb(**kwargs):
     # wandb initialization
-    wandb.init(project=kwargs['wandb_project'], entity='qdrl', group=kwargs['wandb_group'], name=kwargs['run_name'])
+    wandb.init(
+        project=kwargs['wandb_project'],
+        #  entity='qdrl',
+        group=kwargs['wandb_group'],
+        name=kwargs['run_name'],
+    )
     cfg = kwargs.get('cfg', None)
     if cfg is None:
         cfg = {}
@@ -79,9 +84,11 @@ def save_checkpoint(cp_dir, cp_name, model, optimizer, **kwargs):
 
 
 def save_cfg(dir, cfg):
+
     def to_dict(cfg):
         if isinstance(cfg, AttrDict):
             cfg = dict(cfg)
+
     filename = 'cfg.json'
     fp = os.path.join(dir, filename)
     with open(fp, 'w') as f:
@@ -105,8 +112,15 @@ class DataPostProcessor(Axes):
         self.xaxis = maxis.XAxis(self)
         self.yaxis = maxis.YAxis(self)
 
-    def fill_between(self, x, y1, y2=0, where=None, interpolate=False,
-                     step=None, monotonic=True, **kwargs):
+    def fill_between(self,
+                     x,
+                     y1,
+                     y2=0,
+                     where=None,
+                     interpolate=False,
+                     step=None,
+                     monotonic=True,
+                     **kwargs):
         if isinstance(y1, pandas.Series):
             y1 = y1.to_numpy()
         if isinstance(y2, pandas.Series):
@@ -123,8 +137,11 @@ class DataPostProcessor(Axes):
                 mean = self.lines[i].get_ydata()
                 mean = np.maximum.accumulate(mean)
                 self.lines[i].set_ydata(mean)
-        Axes.fill_between(self, x, y1, y2, where=where, interpolate=interpolate,
-                          step=step, **kwargs)
-
-
-
+        Axes.fill_between(self,
+                          x,
+                          y1,
+                          y2,
+                          where=where,
+                          interpolate=interpolate,
+                          step=step,
+                          **kwargs)
