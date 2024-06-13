@@ -1,13 +1,14 @@
+from time import time
+
 import numpy as np
 import torch
+from box import Box
 
-from attrdict import AttrDict
-from time import time
-from utils.utilities import log
-from models.vectorized import VectorizedActor
 from models.actor_critic import Actor, PGAMEActor
+from models.vectorized import VectorizedActor
+from utils.utilities import log
 
-TEST_CFG = AttrDict({
+TEST_CFG = Box({
     'normalize_obs': False,
     'normalize_rewards': False,
     'obs_dim': 227,
@@ -22,11 +23,12 @@ TEST_CFG = AttrDict({
 
 
 def test_serialize_deserialize_pgame_actor():
-    obs_size, action_shape = 87, (8,)
+    obs_size, action_shape = 87, (8, )
     agent1 = PGAMEActor(obs_shape=obs_size, action_shape=action_shape)
     agent1_params = agent1.serialize()
 
-    agent2 = PGAMEActor(obs_shape=obs_size, action_shape=action_shape).deserialize(agent1_params)
+    agent2 = PGAMEActor(obs_shape=obs_size,
+                        action_shape=action_shape).deserialize(agent1_params)
     agent2_params = agent2.serialize()
     assert np.allclose(agent1_params, agent2_params)
 
@@ -36,8 +38,12 @@ def test_vectorized_policy():
     obs_dim, action_shape = TEST_CFG.obs_dim, TEST_CFG.action_shape
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     num_models = 10
-    models = [Actor(obs_dim, action_shape, False, False).to(device) for _ in range(num_models)]
-    vec_model = VectorizedActor(models, Actor, obs_dim, action_shape, False, False).to(device)
+    models = [
+        Actor(obs_dim, action_shape, False, False).to(device)
+        for _ in range(num_models)
+    ]
+    vec_model = VectorizedActor(models, Actor, obs_dim, action_shape, False,
+                                False).to(device)
     obs = torch.randn((num_models, obs_dim)).to(device)
 
     # test same number of models as number of obs
@@ -56,14 +62,20 @@ def test_vectorized_policy():
     assert torch.allclose(res_for_loop, res_vectorized, atol=1e-3), "Error! The vectorized policy does not produce the " \
                                                          "same outputs as naive for-loop over all the individual models"
 
-    print(f'For loop over models took {elapsed_for:.2f} seconds. Vectorized inference took {elapsed_vec:.2f} seconds')
+    print(
+        f'For loop over models took {elapsed_for:.2f} seconds. Vectorized inference took {elapsed_vec:.2f} seconds'
+    )
 
     # test multiple obs per model
     num_models = 7
     num_obs = num_models * 3
 
-    models = [Actor(obs_dim, action_shape, False, False).to(device) for _ in range(num_models)]
-    vec_model = VectorizedActor(models, Actor, obs_dim, action_shape, False, False).to(device)
+    models = [
+        Actor(obs_dim, action_shape, False, False).to(device)
+        for _ in range(num_models)
+    ]
+    vec_model = VectorizedActor(models, Actor, obs_dim, action_shape, False,
+                                False).to(device)
     obs = torch.randn((num_obs, obs_dim)).to(device)
 
     with torch.no_grad():
@@ -71,7 +83,8 @@ def test_vectorized_policy():
         res_for_loop = []
         obs = obs.reshape(num_models, -1, obs_dim)
         for next_obs, model in zip(obs, models):
-            obs1, obs2, obs3 = next_obs[0].reshape(1, -1), next_obs[1].reshape(1, -1), next_obs[2].reshape(1, -1)
+            obs1, obs2, obs3 = next_obs[0].reshape(1, -1), next_obs[1].reshape(
+                1, -1), next_obs[2].reshape(1, -1)
             res_for_loop.append(model(obs1))
             res_for_loop.append(model(obs2))
             res_for_loop.append(model(obs3))
@@ -93,17 +106,18 @@ def validate_state_dicts(model_state_dict_1, model_state_dict_2):
     # Replicate modules have "module" attached to their keys, so strip these off when comparing to local model.
     if next(iter(model_state_dict_1.keys())).startswith("module"):
         model_state_dict_1 = {
-            k[len("module") + 1:]: v for k, v in model_state_dict_1.items()
+            k[len("module") + 1:]: v
+            for k, v in model_state_dict_1.items()
         }
 
     if next(iter(model_state_dict_2.keys())).startswith("module"):
         model_state_dict_2 = {
-            k[len("module") + 1:]: v for k, v in model_state_dict_2.items()
+            k[len("module") + 1:]: v
+            for k, v in model_state_dict_2.items()
         }
 
-    for ((k_1, v_1), (k_2, v_2)) in zip(
-            model_state_dict_1.items(), model_state_dict_2.items()
-    ):
+    for ((k_1, v_1), (k_2, v_2)) in zip(model_state_dict_1.items(),
+                                        model_state_dict_2.items()):
         if k_1 != k_2:
             log.info(f"Key mismatch: {k_1} vs {k_2}")
             return False
@@ -131,7 +145,10 @@ def test_vectorized_to_list():
     same state they were passed in'''
     obs_shape, action_shape = TEST_CFG.obs_dim, TEST_CFG.action_shape
     models = [Actor(obs_shape, action_shape, False, False) for _ in range(10)]
-    vec_model = VectorizedActor(models, Actor, obs_shape=obs_shape, action_shape=action_shape)
+    vec_model = VectorizedActor(models,
+                                Actor,
+                                obs_shape=obs_shape,
+                                action_shape=action_shape)
     models_returned = vec_model.vec_to_models()
 
     for m_old, m_new in zip(models, models_returned):

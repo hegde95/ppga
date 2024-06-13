@@ -21,5 +21,4 @@ colorlog
 ribs[all]==0.7.1
 qdax
 
-# Since attrdict has been deprecated, we need a patched local version.
--e ./attrdict
+python-box[all]~=7.0

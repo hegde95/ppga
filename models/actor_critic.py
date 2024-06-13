@@ -4,7 +4,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from attrdict import AttrDict
 from models.policy import StochasticPolicy
 
 
@@ -168,7 +167,7 @@ class Critic(CriticBase):
             layer_init(nn.Linear(256, 256)),
             nn.Tanh(),
         )
-        self.critic = nn.Sequential(layer_init(nn.Linear(256, 1), std=1.0),)
+        self.critic = nn.Sequential(layer_init(nn.Linear(256, 1), std=1.0), )
 
     def get_value(self, obs):
         core_out = self.core(obs)

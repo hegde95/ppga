@@ -10,10 +10,9 @@ import numpy as np
 import pandas
 import torch
 import wandb
+from box import Box
 from colorlog import ColoredFormatter
 from matplotlib.pyplot import Axes
-
-from attrdict import AttrDict
 
 ch = logging.StreamHandler()
 ch.setLevel(logging.DEBUG)
@@ -86,7 +85,7 @@ def save_checkpoint(cp_dir, cp_name, model, optimizer, **kwargs):
 def save_cfg(dir, cfg):
 
     def to_dict(cfg):
-        if isinstance(cfg, AttrDict):
+        if isinstance(cfg, Box):
             cfg = dict(cfg)
 
     filename = 'cfg.json'

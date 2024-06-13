@@ -1,8 +1,8 @@
-
-import os
-import cv2
 import argparse
-from attrdict import AttrDict
+import os
+
+import cv2
+from box import Box
 
 
 def parse_args():
@@ -11,12 +11,13 @@ def parse_args():
     parser.add_argument('--video_name', type=str)
     parser.add_argument('--fps', type=int)
     args = parser.parse_args()
-    return AttrDict(vars(args))
+    return Box(vars(args))
 
 
 if __name__ == '__main__':
     cfg = parse_args()
-    images = sorted([img for img in os.listdir(cfg.image_folder) if img.endswith(".png")])
+    images = sorted(
+        [img for img in os.listdir(cfg.image_folder) if img.endswith(".png")])
     frame = cv2.imread(os.path.join(cfg.image_folder, images[0]))
     height, width, layers = frame.shape
 

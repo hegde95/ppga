@@ -1,17 +1,17 @@
-
 # Computes CDFs for each archive
 
-import re
+import argparse
 import csv
 import glob
 import os
-import argparse
+import re
+from os import path
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-import matplotlib.pyplot as plt
-from os import path
-from attrdict import AttrDict
+from box import Box
 
 name_mapping_1 = {
     'cma_me_imp_100': 'CMA-ME',
@@ -48,12 +48,17 @@ def parse_args():
     parser.add_argument('--archive_resolution', action='append', type=int)
     parser.add_argument('--experiment_path', type=str)
     parser.add_argument('--archive_path', type=str)
-    parser.add_argument('--skip_len', type=int, default=200)  # not sure what this does
-    parser.add_argument('--archive_summary_filename', type=str, default='cdf.csv')
-    parser.add_argument('--algorithm_name', type=str, default='cma_mae_100_0.01')
+    parser.add_argument('--skip_len', type=int,
+                        default=200)  # not sure what this does
+    parser.add_argument('--archive_summary_filename',
+                        type=str,
+                        default='cdf.csv')
+    parser.add_argument('--algorithm_name',
+                        type=str,
+                        default='cma_mae_100_0.01')
 
     args = parser.parse_args()
-    cfg = AttrDict(vars(args))
+    cfg = Box(vars(args))
     return cfg
 
 
@@ -80,18 +85,22 @@ def make_cdf_plot(cfg, plot_dir):
 
     sns.set(font_scale=4)
     with sns.axes_style("white"):
-        sns.set_style("white", {'font.family': 'serif', 'font.serif': 'Palatino'})
+        sns.set_style("white", {
+            'font.family': 'serif',
+            'font.serif': 'Palatino'
+        })
         sns.set_palette("colorblind")
 
         # Plot the responses for different events and regions
-        sns_plot = sns.lineplot(x="Objective",
-                                y=y_label,
-                                linewidth=3.0,
-                                hue="Algorithm",
-                                data=data,
-                                legend=False,
-                                palette=palette,
-                                )
+        sns_plot = sns.lineplot(
+            x="Objective",
+            y=y_label,
+            linewidth=3.0,
+            hue="Algorithm",
+            data=data,
+            legend=False,
+            palette=palette,
+        )
         sns_plot.set(xlim=tuple(cfg.objective_range))
         # plt.xticks([96, 98, 100])
         # plt.xticks([0, 50, 100])
@@ -155,9 +164,8 @@ def compile_cdf(cfg):
 
     # Sort the data by the names in the given order.
     all_data.sort(key=order_func)
-    all_data.insert(0,
-                    ['Algorithm', 'Trial', 'Objective', 'Threshold Percentage']
-                    )
+    all_data.insert(
+        0, ['Algorithm', 'Trial', 'Objective', 'Threshold Percentage'])
     return all_data
 
 

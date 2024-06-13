@@ -8,8 +8,8 @@ from distutils.util import strtobool
 import h5py
 import numpy as np
 import torch
+from box import Box
 
-from attrdict import AttrDict
 from models.actor_critic import Actor
 from RL.ppo import PPO
 from utils.utilities import config_wandb, log
@@ -178,10 +178,11 @@ def parse_args():
 
     # algorithm args
     parser.add_argument('--total_timesteps', type=int, default=1000000)
-    parser.add_argument('--env_type',
-                        type=str,
-                        choices=['brax', 'isaac'],
-                        help='Whether to use cpu-envs or gpu-envs for rollouts')
+    parser.add_argument(
+        '--env_type',
+        type=str,
+        choices=['brax', 'isaac'],
+        help='Whether to use cpu-envs or gpu-envs for rollouts')
     # args for brax
     parser.add_argument('--env_batch_size',
                         default=1,
@@ -297,7 +298,7 @@ def parse_args():
     parser.add_argument('--num_dims', type=int)
 
     args = parser.parse_args()
-    cfg = AttrDict(vars(args))
+    cfg = Box(vars(args))
     return cfg
 
 
@@ -313,7 +314,8 @@ def main():
         from envs.brax_custom.brax_env import make_single_env_brax
         single_env = make_single_env_brax(cfg)
     else:
-        raise NotImplementedError(f'{cfg.env_type} is undefined for "env_type"')
+        raise NotImplementedError(
+            f'{cfg.env_type} is undefined for "env_type"')
 
     cfg.batch_size = int(cfg.env_batch_size * cfg.rollout_length)
     cfg.num_envs = int(cfg.env_batch_size)

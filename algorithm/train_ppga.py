@@ -8,9 +8,9 @@ from pathlib import Path
 import numpy as np
 import torch
 import wandb
+from box import Box
 from ribs.schedulers import Scheduler
 
-from attrdict import AttrDict
 from envs.brax_custom import reward_offset
 from envs.brax_custom.brax_env import make_vec_env_brax
 from models.actor_critic import Actor
@@ -35,7 +35,7 @@ def strtobool(val):
     elif val in ('n', 'no', 'f', 'false', 'off', '0'):
         return 0
     else:
-        raise ValueError("invalid truth value %r" % (val,))
+        raise ValueError("invalid truth value %r" % (val, ))
 
 
 def parse_args():
@@ -281,7 +281,7 @@ def parse_args():
     )
 
     args = parser.parse_args()
-    return AttrDict(vars(args))
+    return Box(vars(args))
 
 
 def save_scheduler(scheduler, save_path):
@@ -294,13 +294,13 @@ def save_scheduler(scheduler, save_path):
     scheduler.emitters[0].opt.problem._generator = gen
 
 
-def create_scheduler(cfg: AttrDict,
+def create_scheduler(cfg: Box,
                      archive_learning_rate: float = None,
                      use_result_archive: bool = True,
                      initial_sol: np.ndarray = None):
     '''Creates a scheduler that uses the ppga emitter
         Args:
-        cfg (AttrDict): config file
+        cfg (Box): config file
         archive_learning_rate (float): Learning rate of archive.
         use_result_archive (bool): Whether to use a separate archive to store
             the results.
@@ -451,7 +451,7 @@ def create_scheduler(cfg: AttrDict,
     )
 
 
-def train_ppga(cfg: AttrDict, vec_env):
+def train_ppga(cfg: Box, vec_env):
     # setup logging
     exp_dir = Path(cfg.outdir)
     logdir = exp_dir.joinpath(Path('logs'))
@@ -488,7 +488,8 @@ def train_ppga(cfg: AttrDict, vec_env):
         scheduler = load_scheduler_from_checkpoint(cfg.load_scheduler_from_cp,
                                                    cfg.seed, device)
     else:
-        scheduler = create_scheduler(cfg, use_result_archive=use_result_archive)
+        scheduler = create_scheduler(cfg,
+                                     use_result_archive=use_result_archive)
 
     # (optional) take 3d archive snapshots and use to construct a gif
     archive_snapshot_filename = os.path.join(str(logdir),
@@ -584,9 +585,9 @@ def train_ppga(cfg: AttrDict, vec_env):
             return_normalizer=eval_rew_normalizer)
 
         if cfg.weight_decay:
-            reg_loss = cfg.weight_decay * np.array([
-                np.linalg.norm(sol) for sol in branched_sols
-            ]).reshape(objs.shape)
+            reg_loss = cfg.weight_decay * np.array(
+                [np.linalg.norm(sol)
+                 for sol in branched_sols]).reshape(objs.shape)
             objs -= reg_loss
 
         best = max(best, max(objs))
@@ -661,8 +662,8 @@ def train_ppga(cfg: AttrDict, vec_env):
                 os.mkdir(final_cp_dir)
             # Save a full archive for analysis.
             df = result_archive.data(return_type="pandas")
-            df.to_pickle(os.path.join(final_cp_dir,
-                                      f"archive_df_{itr:08d}.pkl"))
+            df.to_pickle(
+                os.path.join(final_cp_dir, f"archive_df_{itr:08d}.pkl"))
 
             if cfg.save_scheduler:
                 scheduler_savepath = os.path.join(final_cp_dir,
@@ -682,14 +683,13 @@ def train_ppga(cfg: AttrDict, vec_env):
                 writer = csv.writer(summary_file)
                 data = [
                     itr, result_archive.stats.qd_score,
-                    result_archive.stats.coverage, result_archive.stats.obj_max,
-                    result_archive.stats.obj_mean
+                    result_archive.stats.coverage,
+                    result_archive.stats.obj_max, result_archive.stats.obj_mean
                 ]
                 writer.writerow(data)
 
-        if (itr > 0 and itr % log_freq == 0 and
-                cfg.take_archive_snapshots) or (final_itr and
-                                                cfg.take_archive_snapshots):
+        if (itr > 0 and itr % log_freq == 0 and cfg.take_archive_snapshots
+            ) or (final_itr and cfg.take_archive_snapshots):
             with open(archive_snapshot_filename, 'a') as archive_snapshot_file:
                 writer = csv.writer(archive_snapshot_file)
                 num_cells = np.prod(scheduler.result_archive.dims)
