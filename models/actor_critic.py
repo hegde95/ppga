@@ -1,12 +1,11 @@
-from typing import List
+from typing import List, Optional, Union
 
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
 
-from models.policy import StochasticPolicy
-from typing import Union, Optional
 from attrdict import AttrDict
+from models.policy import StochasticPolicy
 
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
@@ -16,12 +15,16 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 
 
 class Actor(StochasticPolicy):
+
     def __init__(self,
                  obs_shape: Union[int, tuple],
                  action_shape: np.ndarray,
                  normalize_obs: bool = False,
                  normalize_returns: bool = False):
-        StochasticPolicy.__init__(self, normalize_obs=normalize_obs, obs_shape=obs_shape, normalize_returns=normalize_returns)
+        StochasticPolicy.__init__(self,
+                                  normalize_obs=normalize_obs,
+                                  obs_shape=obs_shape,
+                                  normalize_returns=normalize_returns)
 
         self.actor_mean = nn.Sequential(
             layer_init(nn.Linear(np.array(obs_shape).prod(), 128)),
@@ -34,9 +37,12 @@ class Actor(StochasticPolicy):
         self.actor_logstd = nn.Parameter(torch.zeros(1, np.prod(action_shape)))
 
     def forward(self, x):
+        """Executes the mean action for the given observation."""
         return self.actor_mean(x)
 
     def get_action(self, obs, action=None):
+        """Samples an action (instead of just taking the mean) and returns
+        corresponding info for the sample (logprob and entropy)."""
         action_mean = self.actor_mean(obs)
         action_logstd = self.actor_logstd.expand_as(action_mean)
         action_std = torch.exp(action_logstd)
@@ -45,18 +51,30 @@ class Actor(StochasticPolicy):
             action = probs.sample()
         return action, probs.log_prob(action).sum(1), probs.entropy()
 
+    def get_action_2(self, obs, action=None):
+        """Fixed version of get_action.
+
+        Old version seems to give issues with shapes; added this in case there
+        are any backwards compatibility issues.
+        """
+        action_mean = self.actor_mean(obs)
+        action_logstd = self.actor_logstd.reshape(action_mean.shape)
+        action_std = torch.exp(action_logstd)
+        probs = torch.distributions.Normal(action_mean, action_std)
+        if action is None:
+            action = probs.sample()
+
+        return action, probs.log_prob(action), probs.entropy()
+
 
 class PGAMEActor(nn.Module):
+
     def __init__(self, obs_shape, action_shape):
         super().__init__()
-        self.actor_mean = nn.Sequential(
-            nn.Linear(obs_shape, 128),
-            nn.Tanh(),
-            nn.Linear(128, 128),
-            nn.Tanh(),
-            nn.Linear(128, np.prod(action_shape)),
-            nn.Tanh()
-        )
+        self.actor_mean = nn.Sequential(nn.Linear(obs_shape, 128), nn.Tanh(),
+                                        nn.Linear(128, 128), nn.Tanh(),
+                                        nn.Linear(128, np.prod(action_shape)),
+                                        nn.Tanh())
         self.actor_logstd = -100.0 * torch.ones(action_shape[0])
 
     def forward(self, obs):
@@ -93,11 +111,13 @@ class PGAMEActor(nn.Module):
 
 
 class CriticBase(nn.Module):
+
     def __init__(self):
         super().__init__()
 
     def load(self, filename):
-        self.load_state_dict(torch.load(filename, map_location=torch.device('cpu')))
+        self.load_state_dict(
+            torch.load(filename, map_location=torch.device('cpu')))
 
     def save(self, filename):
         torch.save(self.state_dict(), filename)
@@ -132,11 +152,11 @@ class CriticBase(nn.Module):
     def gradient(self):
         '''Returns 1D numpy array view of the gradients of this actor'''
         return np.concatenate(
-            [p.grad.cpu().detach().numpy().ravel() for p in self.parameters()]
-        )
+            [p.grad.cpu().detach().numpy().ravel() for p in self.parameters()])
 
 
 class Critic(CriticBase):
+
     def __init__(self, obs_shape):
         '''
         Standard critic used in PPO. Used to move the mean solution point
@@ -148,9 +168,7 @@ class Critic(CriticBase):
             layer_init(nn.Linear(256, 256)),
             nn.Tanh(),
         )
-        self.critic = nn.Sequential(
-            layer_init(nn.Linear(256, 1), std=1.0),
-        )
+        self.critic = nn.Sequential(layer_init(nn.Linear(256, 1), std=1.0),)
 
     def get_value(self, obs):
         core_out = self.core(obs)
@@ -161,6 +179,7 @@ class Critic(CriticBase):
 
 
 class QDCritic(CriticBase):
+
     def __init__(self,
                  obs_shape: Union[int, tuple],
                  measure_dim: int,
@@ -177,11 +196,9 @@ class QDCritic(CriticBase):
             self.all_critics = nn.ModuleList([
                 nn.Sequential(
                     layer_init(nn.Linear(np.array(obs_shape).prod(), 256)),
-                    nn.Tanh(),
-                    layer_init(nn.Linear(256, 256)),
-                    nn.Tanh(),
-                    layer_init(nn.Linear(256, 1), std=1.0)
-                ) for _ in range(measure_dim + 1)
+                    nn.Tanh(), layer_init(nn.Linear(256, 256)), nn.Tanh(),
+                    layer_init(nn.Linear(256, 1), std=1.0))
+                for _ in range(measure_dim + 1)
             ])
         else:
             self.all_critics = nn.ModuleList(critics_list)
