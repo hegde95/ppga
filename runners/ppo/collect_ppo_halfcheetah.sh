@@ -8,8 +8,8 @@ SEED=1111
 RUN_NAME="ppo_"$ENV_NAME"_seed_"$SEED
 echo $RUN_NAME
 python -m RL.collect_ppo_trajectories \
-  --checkpoint=halfcheetah_expert_1/halfcheetah_brax_model_0_checkpoint \
-  --output_file=halfcheetah_expert_1/halfcheetah_trajectories.h5 \
+  --checkpoint=checkpoints/halfcheetah_brax_model_0_checkpoint \
+  --output_file=checkpoints/halfcheetah_trajectories.h5 \
   --max_path=1000 \
   --num_data=1000000 \
   --env_name=$ENV_NAME \

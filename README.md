@@ -1,4 +1,21 @@
-# Cleaned up version of PPGA
+# Upgraded Version of PPGA
+
+## Notable Changes
+
+- Switched to `requirements.txt` instead of `environment.yml`
+- Upgraded pyribs to 0.7.1
+- Upgraded to jax 0.4.28 and Brax 0.9.4, particularly by adopting code in the
+  DCG-MAP-Elites repo:
+  https://github.com/adaptive-intelligent-robotics/DCG-MAP-Elites
+  and the qd_position repo:
+  https://github.com/SumeetBatra/qd_position/tree/main
+  - jax is only used in Brax in this repo, so upgrading Brax allowed upgrading
+    jax.
+- Upgraded to torch 2.3.1 (torch >= 2.0 and jax >= 0.4.26 work well together due
+  to CUDA versions).
+- Upgraded to evotorch 0.5.1
+- Removed attrdict since it is outdated and replaced it with Box
+  https://github.com/cdgriffith/Box
 
 ## Installation
 
@@ -9,6 +26,16 @@ conda activate ./env
 # it is set to CPU by default.
 pip install -r requirements.txt
 ```
+
+## Running PPO for Diverse Generators Work
+
+1. Train the agent with `bash runners/ppo/train_ppo_halfcheetah.sh`
+1. Collect agent trajectory data with `bash runners/ppo/collect_ppo_halfcheetah.sh`
+
+Outputs should now be in the `checkpoints/` folder as
+`checkpoints/halfcheetah_brax_model_0_checkpoint` (the model checkpoint)
+`output_file=checkpoints/halfcheetah_trajectories.h5` (the dataset of
+trajectories)
 
 ---
 

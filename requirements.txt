@@ -1,21 +1,19 @@
-torch==1.13.0
+torch==2.3.1
 
-# For CUDA.
-# -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-# jax[cuda11_cudnn82]==0.3.25
+# JAX
+# Comment: JAX and PyTorch are difficult to install together due to CUDA
+# dependencies; these versions seem to both allow CUDA 12.1 -- see here for more
+# info:
+# https://github.com/google/jax/issues/18032
+jax[cuda12]==0.4.28
+brax==0.9.4
 
-# For CPU; see
-# https://jax.readthedocs.io/en/latest/installation.html#installing-older-jaxlib-wheels
--f https://storage.googleapis.com/jax-releases/jax_releases.html
-jax[cpu]==0.3.25
-
-jaxopt==0.5.5
-flax==0.6.1
-brax==0.1.0
-chex==0.1.5
-gym==0.23.1
+jaxopt==0.8.3
+flax==0.8.4
+chex==0.1.86
+gym==0.26.2
 wandb
-evotorch==0.3.0
+evotorch==0.5.1
 colorlog
 
 ribs[all]==0.7.1
