@@ -731,8 +731,10 @@ def main():
     cfg.num_envs = int(cfg.env_batch_size)
 
     cfg.minibatch_size = int(cfg.batch_size // cfg.num_minibatches)
-    cfg.obs_shape = vec_env.single_observation_space.shape
-    cfg.action_shape = vec_env.single_action_space.shape
+
+    # [1:] ignores the batch dimension.
+    cfg.obs_shape = vec_env.observation_space.shape[1:]
+    cfg.action_shape = vec_env.action_space.shape[1:]
 
     if cfg.use_wandb:
         config_wandb(batch_size=cfg.batch_size,

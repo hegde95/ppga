@@ -1,13 +1,14 @@
+"""Reference:
+https://github.com/adaptive-intelligent-robotics/DCG-MAP-Elites/blob/main/qdax/environments/base_wrappers.py
+"""
 from abc import abstractmethod
 from typing import Any, List, Tuple
 
-from brax import jumpy as jp
-from brax.envs.env import Env, State
-
-# taken from https://raw.githubusercontent.com/adaptive-intelligent-robotics/QDax/main/qdax/environments/base_wrappers.py
+import jax.numpy as jnp
+from brax.envs.base import PipelineEnv, State
 
 
-class QDEnv(Env):
+class QDEnv(PipelineEnv):
     """
     Wrapper for all QD environments.
     """
@@ -47,13 +48,13 @@ class QDWrapper(QDEnv):
     """Wrapper for QD environments."""
 
     def __init__(self, env: QDEnv):
-        super().__init__(config=None)
+        super().__init__(sys=env.sys, backend=env.backend)
         self.env = env
 
-    def reset(self, rng: jp.ndarray) -> State:
+    def reset(self, rng: jnp.ndarray) -> State:
         return self.env.reset(rng)
 
-    def step(self, state: State, action: jp.ndarray) -> State:
+    def step(self, state: State, action: jnp.ndarray) -> State:
         return self.env.step(state, action)
 
     @property
@@ -89,7 +90,7 @@ class QDWrapper(QDEnv):
         return self.env.name
 
     @property
-    def unwrapped(self) -> Env:
+    def unwrapped(self) -> PipelineEnv:
         return self.env.unwrapped
 
     def __getattr__(self, name: str) -> Any:
@@ -101,22 +102,22 @@ class QDWrapper(QDEnv):
 class StateDescriptorResetWrapper(QDWrapper):
     """Automatically resets state descriptors."""
 
-    def reset(self, rng: jp.ndarray) -> State:
+    def reset(self, rng: jnp.ndarray) -> State:
         state = self.env.reset(rng)
         state.info["first_state_descriptor"] = state.info["state_descriptor"]
         return state
 
-    def step(self, state: State, action: jp.ndarray) -> State:
-
+    def step(self, state: State, action: jnp.ndarray) -> State:
         state = self.env.step(state, action)
 
-        def where_done(x: jp.ndarray, y: jp.ndarray) -> jp.ndarray:
+        def where_done(x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
             done = state.done
             if done.shape:
-                done = jp.reshape(done, tuple([x.shape[0]] + [1] * (len(x.shape) - 1)))
-            return jp.where(done, x, y)
+                done = jnp.reshape(
+                    done, tuple([x.shape[0]] + [1] * (len(x.shape) - 1)))
+            return jnp.where(done, x, y)
 
         state.info["state_descriptor"] = where_done(
-            state.info["first_state_descriptor"], state.info["state_descriptor"]
-        )
+            state.info["first_state_descriptor"],
+            state.info["state_descriptor"])
         return state

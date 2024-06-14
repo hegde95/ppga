@@ -1,19 +1,16 @@
-import gym
-import numpy as np
-import torch
-
-from brax.envs import env as brax_env
-from brax import jumpy as jp
+import jax.numpy as jnp
+from brax.envs import State, Wrapper
 
 
-class TotalReward(brax_env.Wrapper):
-    def reset(self, rng: jp.ndarray) -> brax_env.State:
+class TotalReward(Wrapper):
+
+    def reset(self, rng: jnp.ndarray) -> State:
         state = self.env.reset(rng)
-        state.info['total_reward'] = jp.zeros(self.env.batch_size)
-        state.info['traj_length'] = jp.zeros(self.env.batch_size)
+        state.info['total_reward'] = jnp.zeros(self.env.batch_size)
+        state.info['traj_length'] = jnp.zeros(self.env.batch_size)
         return state
 
-    def step(self, state: brax_env.State, action: jp.ndarray) -> brax_env.State:
+    def step(self, state: State, action: jnp.ndarray) -> State:
         nstate = self.env.step(state, action)
         if 'total_reward' in nstate.info:
             total_rew = nstate.info['total_reward']
@@ -21,7 +18,6 @@ class TotalReward(brax_env.Wrapper):
             state.info.update(total_reward=total_rew)
         if 'traj_length' in nstate.info:
             t = nstate.info['traj_length']
-            t += jp.ones(self.env.batch_size)
+            t += jnp.ones(self.env.batch_size)
             state.info.update(traj_length=t)
         return nstate
-

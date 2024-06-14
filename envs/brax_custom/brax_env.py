@@ -3,7 +3,7 @@ import functools
 import brax
 import gym
 import torch
-from brax.envs import to_torch
+from brax.envs.wrappers.torch import TorchWrapper
 from jax.dlpack import to_dlpack
 
 from envs import brax_custom
@@ -43,7 +43,7 @@ def make_vec_env_brax(cfg):
     entry_point = functools.partial(brax_custom.create_gym_env,
                                     env_name=cfg.env_name)
     brax_env_name = _to_custom_env[cfg.env_name]['custom_env_name']
-    if brax_env_name not in gym.envs.registry.env_specs:
+    if brax_env_name not in gym.envs.registry:
         gym.register(brax_env_name, entry_point=entry_point)
 
     kwargs = _to_custom_env[cfg.env_name]['kwargs']
@@ -54,7 +54,7 @@ def make_vec_env_brax(cfg):
                        batch_size=cfg.env_batch_size,
                        seed=cfg.seed,
                        **kwargs)
-    vec_env = to_torch.JaxToTorchWrapper(
+    vec_env = TorchWrapper(
         vec_env, device=('cuda' if torch.cuda.is_available() else 'cpu'))
 
     return vec_env
@@ -64,7 +64,7 @@ def make_single_env_brax(cfg):
     entry_point = functools.partial(brax_custom.create_gym_env,
                                     env_name=cfg.env_name)
     brax_env_name = _to_custom_env[cfg.env_name]['custom_env_name']
-    if brax_env_name not in gym.envs.registry.env_specs:
+    if brax_env_name not in gym.envs.registry:
         gym.register(brax_env_name, entry_point=entry_point)
 
     kwargs = _to_custom_env[cfg.env_name]['kwargs']
@@ -79,7 +79,7 @@ def make_single_env_brax(cfg):
         batch_size=None,
         seed=cfg.seed,
         **kwargs)
-    single_env = to_torch.JaxToTorchWrapper(
+    single_env = TorchWrapper(
         single_env, device=('cuda' if torch.cuda.is_available() else 'cpu'))
 
     return single_env

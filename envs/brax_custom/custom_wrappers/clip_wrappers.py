@@ -1,61 +1,63 @@
-from brax.envs import env as brax_env
-from brax import jumpy as jp
-from brax.envs import State
+from brax.envs import Env, State, Wrapper
+from jax import numpy as jnp
 
 
-class ActionClipWrapper(brax_env.Wrapper):
-    def __init__(self, env: brax_env.Env, a_min: float, a_max: float):
+class ActionClipWrapper(Wrapper):
+
+    def __init__(self, env: Env, a_min: float, a_max: float):
         super().__init__(env)
-        self.a_min = jp.array(a_min)
-        self.a_max = jp.array(a_max)
+        self.a_min = jnp.array(a_min)
+        self.a_max = jnp.array(a_max)
 
-    def reset(self, rng: jp.ndarray) -> brax_env.State:
+    def reset(self, rng: jnp.ndarray) -> State:
         state = self.env.reset(rng)
         return state
 
-    def step(self, state: brax_env.State, action: jp.ndarray) -> brax_env.State:
-        action = jp.clip(action, self.a_min, self.a_max)
+    def step(self, state: State, action: jnp.ndarray) -> State:
+        action = jnp.clip(action, self.a_min, self.a_max)
         nstate = self.env.step(state, action)
         return nstate
 
 
-class ObservationClipWrapper(brax_env.Wrapper):
-    def __init__(self, env: brax_env.Env, obs_min, obs_max):
-        super().__init__(env)
-        self.obs_min = jp.array(obs_min)
-        self.obs_max = jp.array(obs_max)
+class ObservationClipWrapper(Wrapper):
 
-    def reset(self, rng: jp.ndarray) -> brax_env.State:
+    def __init__(self, env: Env, obs_min, obs_max):
+        super().__init__(env)
+        self.obs_min = jnp.array(obs_min)
+        self.obs_max = jnp.array(obs_max)
+
+    def reset(self, rng: jnp.ndarray) -> State:
         state = self.env.reset(rng)
         obs = state.obs
-        clipped_obs = jp.clip(obs, self.obs_min, self.obs_max)
+        clipped_obs = jnp.clip(obs, self.obs_min, self.obs_max)
         state = state.replace(obs=clipped_obs)
         return state
 
-    def step(self, state: State, action: jp.ndarray) -> State:
+    def step(self, state: State, action: jnp.ndarray) -> State:
         nstate = self.env.step(state, action)
         obs = nstate.obs
-        clipped_obs = jp.clip(obs, self.obs_min, self.obs_max)
+        clipped_obs = jnp.clip(obs, self.obs_min, self.obs_max)
         nstate = nstate.replace(obs=clipped_obs)
         return nstate
 
 
-class RewardClipWrapper(brax_env.Wrapper):
-    def __init__(self, env: brax_env.Env, rew_min, rew_max):
-        super().__init__(env)
-        self.rew_min = jp.array(rew_min)
-        self.rew_max = jp.array(rew_max)
+class RewardClipWrapper(Wrapper):
 
-    def reset(self, rng: jp.ndarray) -> State:
+    def __init__(self, env: Env, rew_min, rew_max):
+        super().__init__(env)
+        self.rew_min = jnp.array(rew_min)
+        self.rew_max = jnp.array(rew_max)
+
+    def reset(self, rng: jnp.ndarray) -> State:
         state = self.env.reset(rng)
         rew = state.reward
-        clipped_rew = jp.clip(rew, self.rew_min, self.rew_max)
+        clipped_rew = jnp.clip(rew, self.rew_min, self.rew_max)
         state = state.replace(reward=clipped_rew)
         return state
 
-    def step(self, state: State, action: jp.ndarray) -> State:
+    def step(self, state: State, action: jnp.ndarray) -> State:
         nstate = self.env.step(state, action)
         rew = nstate.reward
-        clipped_rew = jp.clip(rew, self.rew_min, self.rew_max)
+        clipped_rew = jnp.clip(rew, self.rew_min, self.rew_max)
         nstate = nstate.replace(reward=clipped_rew)
         return nstate

@@ -1,47 +1,33 @@
-from typing import Any, List, Optional, Sequence, Tuple
+"""Reference:
+https://github.com/adaptive-intelligent-robotics/DCG-MAP-Elites/blob/main/qdax/environments/locomotion_wrappers.py
+"""
+from typing import Any, List, Optional, Tuple
 
+import jax
 import jax.numpy as jnp
-from brax import jumpy as jp
-from brax.envs import Env, State, Wrapper
-from brax.physics import config_pb2
-from brax.physics.base import QP, Info
-from brax.physics.system import System
+from brax.envs.base import Env, State, Wrapper
 
 from envs.brax_custom.custom_wrappers.base_wrappers import QDEnv
 
 FEET_NAMES = {
-    "ant": ["$ Body 4", "$ Body 7", "$ Body 10", "$ Body 13"],
-    "halfcheetah": ["ffoot", "bfoot"],
-    "walker2d": ["foot", "foot_left"],
     "hopper": ["foot"],
+    "walker2d": ["foot", "foot_left"],
+    "halfcheetah": ["bfoot", "ffoot"],
+    "ant": ["", "", "", ""],
     "humanoid": ["left_shin", "right_shin"],
+    "anttrap": ["", "", "", ""],
+    "humanoidtrap": ["left_shin", "right_shin"],
 }
-
-
-class QDSystem(System):
-    """Inheritance of brax_custom physic system.
-
-    Work precisely the same but store some information from the physical
-    simulation in the aux_info attribute.
-
-    This is used in FeetContactWrapper to get the feet contact of the
-    robot with the ground.
-    """
-
-    def __init__(
-        self, config: config_pb2.Config, resource_paths: Optional[Sequence[str]] = None
-    ):
-        super().__init__(config, resource_paths=resource_paths)
-        self.aux_info = None
-
-    def step(self, qp: QP, act: jp.ndarray) -> Tuple[QP, Info]:
-        qp, info = super().step(qp, act)
-        self.aux_info = info
-        return qp, info
 
 
 class FeetContactWrapper(QDEnv):
     """Wraps gym environments to add the feet contact data.
+
+    NOTE: debug=True must be passed into the environment in order for this
+    wrapper to work. The debug argument will be passed to PipelineEnv through
+    kwargs; see here:
+    https://github.com/google/brax/blob/v0.9.4/brax/envs/base.py#L89
+    For more info, see: https://github.com/google/brax/issues/380
 
     Utilisation is simple: create an environment with Brax, pass
     it to the wrapper with the name of the environment, and it will
@@ -56,17 +42,17 @@ class FeetContactWrapper(QDEnv):
 
     Example :
 
-        from brax_custom import envs
-        from brax_custom import jumpy as jp
+        from brax import envs
+        from brax import jumpy as jnp
 
         # choose in ["ant", "walker2d", "hopper", "halfcheetah"]
         ENV_NAME = "ant"
-        env = envs.create(env_name=ENV_NAME)
+        env = envs.create(env_name=ENV_NAME, debug=True)
         qd_env = FeetContactWrapper(env, ENV_NAME)
 
-        state = qd_env.reset(rng=jp.random_prngkey(seed=0))
+        state = qd_env.reset(rng=jnp.random_prngkey(seed=0))
         for i in range(10):
-            action = jp.zeros((qd_env.action_size,))
+            action = jnp.zeros((qd_env.action_size,))
             state = qd_env.step(state, action)
 
             # retrieve feet contact
@@ -79,20 +65,22 @@ class FeetContactWrapper(QDEnv):
     """
 
     def __init__(self, env: Env, env_name: str):
-
         if env_name not in FEET_NAMES.keys():
-            raise NotImplementedError(f"This wrapper does not support {env_name} yet.")
+            raise NotImplementedError(
+                f"This wrapper does not support {env_name} yet.")
 
-        super().__init__(config=None)
-
+        super().__init__(sys=env.sys, backend=env.backend)
         self.env = env
         self._env_name = env_name
-        if hasattr(self.env, "sys"):
-            self.env.sys = QDSystem(self.env.sys.config)
 
-        self._feet_contact_idx = jp.array(
-            [env.sys.body.index.get(name) for name in FEET_NAMES[env_name]]
-        )
+        if hasattr(self.env, "sys"):
+            self._feet_idx = jnp.array([
+                i for i, feet_name in enumerate(self.env.sys.link_names)
+                if feet_name in FEET_NAMES[env_name]
+            ])
+        else:
+            raise NotImplementedError(
+                f"This wrapper does not support {env_name} yet.")
 
     @property
     def state_descriptor_length(self) -> int:
@@ -108,32 +96,37 @@ class FeetContactWrapper(QDEnv):
 
     @property
     def behavior_descriptor_length(self) -> int:
-        return len(self._feet_contact_idx)
+        return len(self._feet_idx)
 
     @property
     def behavior_descriptor_limits(self) -> Tuple[List, List]:
         bd_length = self.behavior_descriptor_length
-        return (jnp.zeros((bd_length,)), jnp.ones((bd_length,)))
+        return (jnp.zeros((bd_length, )), jnp.ones((bd_length, )))
 
     @property
     def name(self) -> str:
         return self._env_name
 
-    def reset(self, rng: jp.ndarray) -> State:
+    def reset(self, rng: jnp.ndarray) -> State:
         state = self.env.reset(rng)
-        state.info["measures"] = self._get_feet_contact(
-            self.env.sys.info(state.qp)
-        )
+        # For compatibility with rest of PPGA code.
+        #  state.info["state_descriptor"] = self._get_feet_contact(state)
+        state.info["measures"] = self._get_feet_contact(state)
         return state
 
-    def step(self, state: State, action: jp.ndarray) -> State:
+    def step(self, state: State, action: jnp.ndarray) -> State:
         state = self.env.step(state, action)
-        state.info["measures"] = self._get_feet_contact(self.env.sys.aux_info)
+        # For compatibility with rest of PPGA code.
+        #  state.info["state_descriptor"] = self._get_feet_contact(state)
+        state.info["measures"] = self._get_feet_contact(state)
         return state
 
-    def _get_feet_contact(self, info: Info) -> jp.ndarray:
-        contacts = info.contact.vel
-        return jp.any(contacts[self._feet_contact_idx], axis=1).astype(jp.float32)
+    def _get_feet_contact(self, state) -> jnp.ndarray:
+        return jnp.any(
+            jax.vmap(lambda x: (state.pipeline_state.contact.link_idx[0] == x)
+                     & (state.pipeline_state.contact.penetration >= 0))(
+                         self._feet_idx),
+            axis=-1).astype(jnp.float32)
 
     @property
     def unwrapped(self) -> Env:
@@ -147,11 +140,13 @@ class FeetContactWrapper(QDEnv):
 
 # name of the center of gravity
 COG_NAMES = {
-    "ant": "$ Torso",
-    "halfcheetah": "torso",
-    "walker2d": "torso",
     "hopper": "torso",
+    "walker2d": "torso",
+    "halfcheetah": "torso",
+    "ant": "torso",
+    "anttrap": "torso",
     "humanoid": "torso",
+    "humanoidtrap": "torso",
 }
 
 
@@ -177,17 +172,17 @@ class XYPositionWrapper(QDEnv):
 
     Example :
 
-        from brax_custom import envs
-        from brax_custom import jumpy as jp
+        from brax import envs
+        from brax import jumpy as jnp
 
         # choose in ["ant", "walker2d", "hopper", "halfcheetah", "humanoid"]
         ENV_NAME = "ant"
         env = envs.create(env_name=ENV_NAME)
         qd_env = XYPositionWrapper(env, ENV_NAME)
 
-        state = qd_env.reset(rng=jp.random_prngkey(seed=0))
+        state = qd_env.reset(rng=jnp.random_prngkey(seed=0))
         for i in range(10):
-            action = jp.zeros((qd_env.action_size,))
+            action = jnp.zeros((qd_env.action_size,))
             state = qd_env.step(state, action)
 
             # retrieve feet contact
@@ -207,30 +202,31 @@ class XYPositionWrapper(QDEnv):
         maxval: Optional[List[float]] = None,
     ):
         if env_name not in COG_NAMES.keys():
-            raise NotImplementedError(f"This wrapper does not support {env_name} yet.")
+            raise NotImplementedError(
+                f"This wrapper does not support {env_name} yet.")
 
-        super().__init__(config=None)
-
+        super().__init__(sys=env.sys, backend=env.backend)
         self.env = env
         self._env_name = env_name
+
         if hasattr(self.env, "sys"):
-            self._cog_idx = self.env.sys.body.index[COG_NAMES[env_name]]
+            self._cog_idx = self.env.sys.link_names.index(COG_NAMES[env_name])
         else:
-            raise NotImplementedError(f"This wrapper does not support {env_name} yet.")
+            raise NotImplementedError(
+                f"This wrapper does not support {env_name} yet.")
 
         if minval is None:
-            minval = jnp.ones((2,)) * (-jnp.inf)
+            minval = jnp.ones((2, )) * (-jnp.inf)
 
         if maxval is None:
-            maxval = jnp.ones((2,)) * jnp.inf
+            maxval = jnp.ones((2, )) * jnp.inf
 
         if len(minval) == 2 and len(maxval) == 2:
             self._minval = jnp.array(minval)
             self._maxval = jnp.array(maxval)
         else:
             raise NotImplementedError(
-                "Please make sure to give two values for each limits."
-            )
+                "Please make sure to give two values for each limits.")
 
     @property
     def state_descriptor_length(self) -> int:
@@ -256,19 +252,20 @@ class XYPositionWrapper(QDEnv):
     def name(self) -> str:
         return self._env_name
 
-    def reset(self, rng: jp.ndarray) -> State:
+    def reset(self, rng: jnp.ndarray) -> State:
         state = self.env.reset(rng)
-        state.info["measures"] = jnp.clip(
-            state.qp.pos[self._cog_idx][:2], a_min=self._minval, a_max=self._maxval
-        )
+        state.info["state_descriptor"] = jnp.clip(
+            state.pipeline_state.x.pos[self._cog_idx][:2],
+            a_min=self._minval,
+            a_max=self._maxval)
         return state
 
-    def step(self, state: State, action: jp.ndarray) -> State:
+    def step(self, state: State, action: jnp.ndarray) -> State:
         state = self.env.step(state, action)
-        # get xy position of the center of gravity
-        state.info["measures"] = jnp.clip(
-            state.qp.pos[self._cog_idx][:2], a_min=self._minval, a_max=self._maxval
-        )
+        state.info["state_descriptor"] = jnp.clip(
+            state.pipeline_state.x.pos[self._cog_idx][:2],
+            a_min=self._minval,
+            a_max=self._maxval)
         return state
 
     @property
@@ -283,11 +280,13 @@ class XYPositionWrapper(QDEnv):
 
 # name of the forward/velocity reward
 FORWARD_REWARD_NAMES = {
-    "ant": "reward_forward",
-    "halfcheetah": "reward_forward",
-    "walker2d": "reward_forward",
     "hopper": "reward_forward",
+    "walker2d": "reward_forward",
+    "halfcheetah": "reward_run",
+    "ant": "reward_forward",
+    "anttrap": "reward_forward",
     "humanoid": "reward_linvel",
+    "humanoidtrap": "reward_linvel",
 }
 
 
@@ -301,33 +300,60 @@ class NoForwardRewardWrapper(Wrapper):
 
     Example :
 
-        from brax_custom import envs
-        from brax_custom import jumpy as jp
+        from brax import envs
+        from brax import jumpy as jnp
 
         # choose in ["ant", "walker2d", "hopper", "halfcheetah", "humanoid"]
         ENV_NAME = "ant"
         env = envs.create(env_name=ENV_NAME)
         qd_env = NoForwardRewardWrapper(env, ENV_NAME)
 
-        state = qd_env.reset(rng=jp.random_prngkey(seed=0))
+        state = qd_env.reset(rng=jnp.random_prngkey(seed=0))
         for i in range(10):
-            action = jp.zeros((qd_env.action_size,))
+            action = jnp.zeros((qd_env.action_size,))
             state = qd_env.step(state, action)
     """
 
     def __init__(self, env: Env, env_name: str) -> None:
         if env_name not in FORWARD_REWARD_NAMES.keys():
-            raise NotImplementedError(f"This wrapper does not support {env_name} yet.")
+            raise NotImplementedError(
+                f"This wrapper does not support {env_name} yet.")
+
         super().__init__(env)
         self._env_name = env_name
-        self._fd_reward_field = FORWARD_REWARD_NAMES[env_name]
+        self._forward_reward_name = FORWARD_REWARD_NAMES[env_name]
 
     @property
     def name(self) -> str:
         return self._env_name
 
-    def step(self, state: State, action: jp.ndarray) -> State:
+    def step(self, state: State, action: jnp.ndarray) -> State:
         state = self.env.step(state, action)
-        # update the reward (remove forward_reward)
-        new_reward = state.reward - state.metrics[self._fd_reward_field]
+        new_reward = state.reward - state.metrics[self._forward_reward_name]
         return state.replace(reward=new_reward)  # type: ignore
+
+
+class AntOmniWrapper(Wrapper):
+    """Wraps ant_omni environment to add and scale position."""
+
+    def __init__(self, env: Env, env_name: str) -> None:
+        super().__init__(env)
+        self._env_name = env_name
+        self._normalize = jnp.ones((self.observation_size, ))
+        if not self._exclude_current_positions_from_observation:
+            self._normalize = self._normalize.at[:2].set(
+                env.behavior_descriptor_limits[1])
+
+    @property
+    def name(self) -> str:
+        return self._env_name
+
+    def reset(self, rng: jnp.ndarray) -> State:
+        state = self.env.reset(rng)
+        return state.replace(obs=state.obs / self._normalize)
+
+    def step(self, state: State, action: jnp.ndarray) -> State:
+        state = self.env.step(state, action)
+        new_reward = state.reward + 3.03
+        return state.replace(obs=state.obs / self._normalize,
+                             reward=new_reward)

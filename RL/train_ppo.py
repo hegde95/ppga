@@ -180,8 +180,10 @@ if __name__ == '__main__':
     cfg.num_emitters = 1
     cfg.envs_per_model = cfg.num_envs // cfg.num_emitters
     cfg.minibatch_size = int(cfg.batch_size // cfg.num_minibatches)
-    cfg.obs_shape = vec_env.single_observation_space.shape
-    cfg.action_shape = vec_env.single_action_space.shape
+
+    # [1:] ignores the batch dimension.
+    cfg.obs_shape = vec_env.observation_space.shape[1:]
+    cfg.action_shape = vec_env.action_space.shape[1:]
 
     log.debug(
         f'Environment: {cfg.env_name}, obs_shape: {cfg.obs_shape}, action_shape: {cfg.action_shape}'
