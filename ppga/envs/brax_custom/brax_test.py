@@ -9,8 +9,8 @@ from brax.envs import to_torch
 from IPython.display import HTML, Image
 from jax.dlpack import to_dlpack
 
-from envs import brax_custom
-from envs.brax_custom.gpu_env import make_vec_env_brax
+from ppga.envs import brax_custom
+from ppga.envs.brax_custom.gpu_env import make_vec_env_brax
 
 v = torch.ones(1, device='cuda')  # init torch cuda before jax
 

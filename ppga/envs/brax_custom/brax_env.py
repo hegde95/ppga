@@ -6,7 +6,7 @@ import torch
 from brax.envs.wrappers.torch import TorchWrapper
 from jax.dlpack import to_dlpack
 
-from envs import brax_custom
+from ppga.envs import brax_custom
 
 v = torch.ones(1, device='cuda' if torch.cuda.is_available() else
                'cpu')  # init torch cuda before jax
@@ -81,5 +81,4 @@ def make_single_env_brax(cfg):
         **kwargs)
     single_env = TorchWrapper(
         single_env, device=('cuda' if torch.cuda.is_available() else 'cpu'))
-
     return single_env

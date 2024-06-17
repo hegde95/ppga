@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from evotorch import Problem, SolutionBatch
 
-from utils.utilities import log
+from ppga.utils.utilities import log
 
 
 class XNES(evotorch.algorithms.XNES):

@@ -1,22 +1,29 @@
+from abc import ABC, abstractmethod
+
+import gym
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
-import gym
+from torch.distributions import Categorical, MultivariateNormal
 
-from abc import ABC, abstractmethod
-from torch.distributions import MultivariateNormal, Categorical
-from utils.normalize import ReturnNormalizer, ObsNormalizer
+from ppga.utils.normalize import ObsNormalizer, ReturnNormalizer
 
 
 class StochasticPolicy(ABC, nn.Module):
-    def __init__(self, normalize_obs=False, obs_shape=None, normalize_returns=False):
+
+    def __init__(self,
+                 normalize_obs=False,
+                 obs_shape=None,
+                 normalize_returns=False):
         super().__init__()
         self.layers: nn.Sequential
 
         if normalize_obs:
             assert obs_shape is not None, 'Normalize obs is enabled but no obs_shape was given'
-        self.obs_normalizer = ObsNormalizer(obs_shape) if normalize_obs else None
-        self.return_normalizer = ReturnNormalizer() if normalize_returns else None
+        self.obs_normalizer = ObsNormalizer(
+            obs_shape) if normalize_obs else None
+        self.return_normalizer = ReturnNormalizer(
+        ) if normalize_returns else None
 
     @abstractmethod
     def forward(self, obs):
@@ -36,7 +43,8 @@ class StochasticPolicy(ABC, nn.Module):
             return MultivariateNormal(loc=raw_logits, covariance_matrix=cov_mat)
 
     def load(self, filename):
-        self.load_state_dict(torch.load(filename, map_location=torch.device('cpu')))
+        self.load_state_dict(
+            torch.load(filename, map_location=torch.device('cpu')))
 
     def save(self, filename):
         torch.save(self.state_dict(), filename)
@@ -71,5 +79,4 @@ class StochasticPolicy(ABC, nn.Module):
     def gradient(self):
         '''Returns 1D numpy array view of the gradients of this actor'''
         return np.concatenate(
-            [p.grad.cpu().detach().numpy().ravel() for p in self.parameters()]
-        )
+            [p.grad.cpu().detach().numpy().ravel() for p in self.parameters()])

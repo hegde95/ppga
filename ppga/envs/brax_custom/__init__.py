@@ -24,11 +24,11 @@ from brax.envs.base import Env, PipelineEnv, State, Wrapper
 from brax.envs.wrappers import gym as gym_wrappers
 from brax.envs.wrappers import training as training_wrappers
 
-from envs.brax_custom.custom_wrappers.clip_wrappers import (
+from ppga.envs.brax_custom.custom_wrappers.clip_wrappers import (
     ActionClipWrapper, ObservationClipWrapper, RewardClipWrapper)
-from envs.brax_custom.custom_wrappers.locomotion_wrappers import \
+from ppga.envs.brax_custom.custom_wrappers.locomotion_wrappers import \
     FeetContactWrapper
-from envs.brax_custom.custom_wrappers.reward_wrappers import TotalReward
+from ppga.envs.brax_custom.custom_wrappers.reward_wrappers import TotalReward
 
 # From QDax: experimentally determinated offset (except for antmaze)
 # should be sufficient to have only positive rewards but no guarantee
@@ -48,8 +48,7 @@ _envs = {
     'humanoid': humanoid.Humanoid,
     'humanoidstandup': humanoidstandup.HumanoidStandup,
     'inverted_pendulum': inverted_pendulum.InvertedPendulum,
-    'inverted_double_pendulum':
-    inverted_double_pendulum.InvertedDoublePendulum,
+    'inverted_double_pendulum': inverted_double_pendulum.InvertedDoublePendulum,
     'pusher': pusher.Pusher,
     'reacher': reacher.Reacher,
     'swimmer': swimmer.Swimmer,

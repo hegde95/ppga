@@ -10,9 +10,9 @@ from ribs.emitters import EmitterBase
 from ribs.emitters.opt import AdamOpt, GradientAscentOpt
 from ribs.emitters.rankers import _get_ranker
 
-from qd.emitters.opt import XNES
-from RL.ppo import PPO
-from utils.utilities import log
+from ppga.qd.emitters.opt import XNES
+from ppga.RL.ppo import PPO
+from ppga.utils.utilities import log
 
 
 class PPGAEmitter(EmitterBase):

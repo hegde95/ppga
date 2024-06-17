@@ -1,18 +1,18 @@
-import jax
-import jax.numpy as jnp
-import numpy as np
 import functools
 import os
 
+import jax
+import jax.numpy as jnp
+import numpy as np
 import torch
-from qdax.core.neuroevolution.networks.networks import MLP
-from qdax import environments
-from qdax.types import Genotype
-from qdax.core.containers.mapelites_repertoire import MapElitesRepertoire
 from jax._src.flatten_util import ravel_pytree
-
-from models.actor_critic import PGAMEActor
+from qdax import environments
+from qdax.core.containers.mapelites_repertoire import MapElitesRepertoire
+from qdax.core.neuroevolution.networks.networks import MLP
+from qdax.types import Genotype
 from ribs.archives import GridArchive
+
+from ppga.models.actor_critic import PGAMEActor
 
 
 def pgame_repertoire_to_pyribs_archive(cp_path):
@@ -44,7 +44,8 @@ def pgame_repertoire_to_pyribs_archive(cp_path):
         fake_params = policy_network.init(subkey, fake_batch)
 
         _, reconstruction_fn = ravel_pytree(fake_params)
-        repertoire = MapElitesRepertoire.load(reconstruction_fn=reconstruction_fn, path=cp_path)
+        repertoire = MapElitesRepertoire.load(
+            reconstruction_fn=reconstruction_fn, path=cp_path)
         return repertoire
 
     repertoire = load_archive(random_key)
@@ -53,11 +54,14 @@ def pgame_repertoire_to_pyribs_archive(cp_path):
     flax_params = repertoire.genotypes['params']
 
     def flax_to_torch_model(model_ind):
-        pytorch_model = PGAMEActor(obs_shape=env.observation_size, action_shape=(env.action_size,))
+        pytorch_model = PGAMEActor(obs_shape=env.observation_size,
+                                   action_shape=(env.action_size,))
         pytorch_params = dict(pytorch_model.named_parameters())
         for i in range(len(flax_params)):
-            pytorch_params[f'actor_mean.{2*i}.weight'].data = torch.from_numpy(flax_params[f'Dense_{i}']['kernel'][model_idx]._value.T.copy())
-            pytorch_params[f'actor_mean.{2*i}.bias'].data = torch.from_numpy(flax_params[f'Dense_{i}']['bias'][model_idx]._value.T.copy())
+            pytorch_params[f'actor_mean.{2*i}.weight'].data = torch.from_numpy(
+                flax_params[f'Dense_{i}']['kernel'][model_idx]._value.T.copy())
+            pytorch_params[f'actor_mean.{2*i}.bias'].data = torch.from_numpy(
+                flax_params[f'Dense_{i}']['bias'][model_idx]._value.T.copy())
         return pytorch_model.serialize()
 
     solution_batch = []

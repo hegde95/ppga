@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from models.policy import StochasticPolicy
+from ppga.models.policy import StochasticPolicy
 
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
@@ -167,7 +167,7 @@ class Critic(CriticBase):
             layer_init(nn.Linear(256, 256)),
             nn.Tanh(),
         )
-        self.critic = nn.Sequential(layer_init(nn.Linear(256, 1), std=1.0), )
+        self.critic = nn.Sequential(layer_init(nn.Linear(256, 1), std=1.0),)
 
     def get_value(self, obs):
         core_out = self.core(obs)

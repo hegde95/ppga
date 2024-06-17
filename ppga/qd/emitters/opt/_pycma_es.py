@@ -1,14 +1,18 @@
-import wandb
 import numpy as np
+import wandb
 from cma import CMAEvolutionStrategy
-from utils.utilities import log
+
+from ppga.utils.utilities import log
 
 
 class PyCMAEvolutionStrategy(CMAEvolutionStrategy):
+
     def __init__(self, x0, sigma0, popsize, seed, dtype):
-        CMAEvolutionStrategy.__init__(self, x0, sigma0, {'CSA_squared': 'True',
-                                                         'popsize': popsize,
-                                                         'seed': seed})
+        CMAEvolutionStrategy.__init__(self, x0, sigma0, {
+            'CSA_squared': 'True',
+            'popsize': popsize,
+            'seed': seed
+        })
         self.solution_dim = len(x0)
         self.dtype = dtype
 
@@ -61,17 +65,16 @@ class PyCMAEvolutionStrategy(CMAEvolutionStrategy):
             return True
 
         # Fitness is too flat (only applies if there are at least 2 parents).
-        if len(ranking_values) >= 2 and np.linalg.norm(ranking_values[0] - ranking_values[-1]) < 1e-12:
+        if len(ranking_values) >= 2 and np.linalg.norm(
+                ranking_values[0] - ranking_values[-1]) < 1e-12:
             log.debug(f'Fitness is too flat. Restarting...')
             return True
 
         # also check for any pycma restart conditions
         stop_status = self.stop(check=True)
         if stop_status != {}:
-            log.debug(f"Pycma stop condition triggered. {stop_status=} Restarting...")
+            log.debug(
+                f"Pycma stop condition triggered. {stop_status=} Restarting...")
             return True
 
         return False
-
-
-

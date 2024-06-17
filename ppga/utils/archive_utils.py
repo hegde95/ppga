@@ -16,11 +16,11 @@ from qdax.core.neuroevolution.networks.networks import MLP
 from ribs.archives import CVTArchive, GridArchive
 from ribs.visualize import cvt_archive_heatmap
 
-from envs.brax_custom import reward_offset
-from envs.brax_custom.brax_env import make_vec_env_brax
-from models.actor_critic import Actor, PGAMEActor
-from models.vectorized import VectorizedActor
-from qd.visualize import grid_archive_heatmap
+from ppga.envs.brax_custom import reward_offset
+from ppga.envs.brax_custom.brax_env import make_vec_env_brax
+from ppga.models.actor_critic import Actor, PGAMEActor
+from ppga.models.vectorized import VectorizedActor
+from ppga.qd.visualize import grid_archive_heatmap
 
 
 def save_heatmap(archive,
@@ -148,7 +148,7 @@ def evaluate(vec_agent,
     total_reward = total_reward.reshape(
         (vec_agent.num_models, vec_env.num_envs // vec_agent.num_models))
     total_reward = total_reward.mean(axis=1)
-    return total_reward.reshape(-1, ), measures.reshape(
+    return total_reward.reshape(-1,), measures.reshape(
         -1, num_dims).detach().cpu().numpy(), metadata
 
 
@@ -222,8 +222,8 @@ def reevaluate_ppga_archive(env_cfg,
         },
     )
     # add the re-evaluated solutions to the new archive
-    new_archive.add(np.ones((len(original_archive), 1)), all_objs,
-                    all_measures, all_metadata)
+    new_archive.add(np.ones((len(original_archive), 1)), all_objs, all_measures,
+                    all_metadata)
     print(f'Re-evaluated PPGA Archive \n'
           f'Coverage: {new_archive.stats.coverage} \n'
           f'Max fitness: {new_archive.stats.obj_max} \n'
@@ -335,7 +335,7 @@ def pgame_repertoire_to_pyribs_archive(cp_path, env_cfg, save_path=None):
     env_batch_size = 1
 
     # define the MLP architecture
-    policy_layer_sizes = (128, 128) + (env.action_size, )
+    policy_layer_sizes = (128, 128) + (env.action_size,)
     policy_network = MLP(
         layer_sizes=policy_layer_sizes,
         kernel_init=jax.nn.initializers.lecun_uniform(),
@@ -351,7 +351,7 @@ def pgame_repertoire_to_pyribs_archive(cp_path, env_cfg, save_path=None):
 
     def load_archive(random_key):
         random_key, subkey = jax.random.split(random_key)
-        fake_batch = jnp.zeros(shape=(env.observation_size, ))
+        fake_batch = jnp.zeros(shape=(env.observation_size,))
         fake_params = policy_network.init(subkey, fake_batch)
 
         _, reconstruction_fn = ravel_pytree(fake_params)
@@ -366,7 +366,7 @@ def pgame_repertoire_to_pyribs_archive(cp_path, env_cfg, save_path=None):
 
     def flax_to_torch_model(model_ind):
         pytorch_model = PGAMEActor(obs_shape=env.observation_size,
-                                   action_shape=(env.action_size, ))
+                                   action_shape=(env.action_size,))
         pytorch_params = dict(pytorch_model.named_parameters())
         for i in range(len(flax_params)):
             pytorch_params[f'actor_mean.{2*i}.weight'].data = torch.from_numpy(
@@ -399,8 +399,7 @@ def pgame_repertoire_to_pyribs_archive(cp_path, env_cfg, save_path=None):
     archive.add(solution_batch, obj_batch, measures_batch)
 
     if save_path is not None:
-        archive_fp = os.path.join(save_path,
-                                  f'{env_name}_original_archive.pkl')
+        archive_fp = os.path.join(save_path, f'{env_name}_original_archive.pkl')
         with open(archive_fp, 'wb') as f:
             pickle.dump(archive, f)
 
@@ -466,8 +465,7 @@ def evaluate_pga_me_archive(archive_dir):
     analysis_dir = os.path.join(archive_dir, 'post_hoc_analysis')
     if not os.path.exists(analysis_dir):
         os.mkdir(analysis_dir)
-    heatmap_path = os.path.join(analysis_dir,
-                                'pga_me_no_autoreset_heatmap.png')
+    heatmap_path = os.path.join(analysis_dir, 'pga_me_no_autoreset_heatmap.png')
     save_heatmap(archive, heatmap_path)
 
 

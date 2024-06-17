@@ -1,2 +1,2 @@
 """pyribs-compliant archives."""
-from qd.archives._grid_archive import GridArchive
+from ppga.qd.archives._grid_archive import GridArchive

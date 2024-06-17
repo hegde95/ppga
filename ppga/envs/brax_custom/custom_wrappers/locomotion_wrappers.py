@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 from brax.envs.base import Env, State, Wrapper
 
-from envs.brax_custom.custom_wrappers.base_wrappers import QDEnv
+from .base_wrappers import QDEnv
 
 FEET_NAMES = {
     "hopper": ["foot"],
@@ -101,7 +101,7 @@ class FeetContactWrapper(QDEnv):
     @property
     def behavior_descriptor_limits(self) -> Tuple[List, List]:
         bd_length = self.behavior_descriptor_length
-        return (jnp.zeros((bd_length, )), jnp.ones((bd_length, )))
+        return (jnp.zeros((bd_length,)), jnp.ones((bd_length,)))
 
     @property
     def name(self) -> str:
@@ -123,8 +123,8 @@ class FeetContactWrapper(QDEnv):
 
     def _get_feet_contact(self, state) -> jnp.ndarray:
         return jnp.any(
-            jax.vmap(lambda x: (state.pipeline_state.contact.link_idx[0] == x)
-                     & (state.pipeline_state.contact.penetration >= 0))(
+            jax.vmap(lambda x: (state.pipeline_state.contact.link_idx[0] == x) &
+                     (state.pipeline_state.contact.penetration >= 0))(
                          self._feet_idx),
             axis=-1).astype(jnp.float32)
 
@@ -216,10 +216,10 @@ class XYPositionWrapper(QDEnv):
                 f"This wrapper does not support {env_name} yet.")
 
         if minval is None:
-            minval = jnp.ones((2, )) * (-jnp.inf)
+            minval = jnp.ones((2,)) * (-jnp.inf)
 
         if maxval is None:
-            maxval = jnp.ones((2, )) * jnp.inf
+            maxval = jnp.ones((2,)) * jnp.inf
 
         if len(minval) == 2 and len(maxval) == 2:
             self._minval = jnp.array(minval)
@@ -339,7 +339,7 @@ class AntOmniWrapper(Wrapper):
     def __init__(self, env: Env, env_name: str) -> None:
         super().__init__(env)
         self._env_name = env_name
-        self._normalize = jnp.ones((self.observation_size, ))
+        self._normalize = jnp.ones((self.observation_size,))
         if not self._exclude_current_positions_from_observation:
             self._normalize = self._normalize.at[:2].set(
                 env.behavior_descriptor_limits[1])
@@ -355,5 +355,4 @@ class AntOmniWrapper(Wrapper):
     def step(self, state: State, action: jnp.ndarray) -> State:
         state = self.env.step(state, action)
         new_reward = state.reward + 3.03
-        return state.replace(obs=state.obs / self._normalize,
-                             reward=new_reward)
+        return state.replace(obs=state.obs / self._normalize, reward=new_reward)

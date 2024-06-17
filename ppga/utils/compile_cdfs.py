@@ -164,8 +164,8 @@ def compile_cdf(cfg):
 
     # Sort the data by the names in the given order.
     all_data.sort(key=order_func)
-    all_data.insert(
-        0, ['Algorithm', 'Trial', 'Objective', 'Threshold Percentage'])
+    all_data.insert(0,
+                    ['Algorithm', 'Trial', 'Objective', 'Threshold Percentage'])
     return all_data
 
 

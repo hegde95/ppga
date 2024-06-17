@@ -2,13 +2,10 @@ import argparse
 import copy
 import glob
 import json
-import logging
 import os
 import pickle
 from collections import OrderedDict
-from itertools import cycle
 from pathlib import Path
-from typing import NamedTuple
 
 import matplotlib
 import matplotlib.projections as proj
@@ -20,12 +17,12 @@ import seaborn as sns
 import wandb
 from box import Box
 from ribs.visualize import grid_archive_heatmap
-from utilities import DataPostProcessor
 
-from utils.archive_utils import (pgame_checkpoint_to_objective_df,
-                                 pgame_repertoire_to_pyribs_archive,
-                                 reevaluate_pgame_archive,
-                                 reevaluate_ppga_archive, save_heatmap)
+from ppga.utils.archive_utils import (pgame_checkpoint_to_objective_df,
+                                      pgame_repertoire_to_pyribs_archive,
+                                      reevaluate_pgame_archive,
+                                      reevaluate_ppga_archive, save_heatmap)
+from ppga.utils.utilities import DataPostProcessor
 
 plt.style.use('science')
 
@@ -92,13 +89,13 @@ shared_params = OrderedDict({
 
 PGAME_DIRS = Box({
     'humanoid':
-    f'{Path.home()}/QDax/experiments/pga_me_humanoid_uni_baseline/',
+        f'{Path.home()}/QDax/experiments/pga_me_humanoid_uni_baseline/',
     'walker2d':
-    f'{Path.home()}/QDax/experiments/pga_me_walker2d_uni_baseline/',
+        f'{Path.home()}/QDax/experiments/pga_me_walker2d_uni_baseline/',
     'halfcheetah':
-    f'{Path.home()}/QDax/experiments/pga_me_halfcheetah_uni_baseline/',
+        f'{Path.home()}/QDax/experiments/pga_me_halfcheetah_uni_baseline/',
     'ant':
-    f'{Path.home()}/QDax/experiments/pga_me_ant_uni_baseline/'
+        f'{Path.home()}/QDax/experiments/pga_me_ant_uni_baseline/'
 })
 
 PPGA_DIRS = Box({
@@ -135,9 +132,9 @@ HUES = OrderedDict({
     'PGA-ME': (0.17254901960784313, 0.6274509803921569, 0.17254901960784313),
     'QDPG': (1.0, 0.4980392156862745, 0.054901960784313725),
     'SEP-CMA-MAE':
-    (0.8392156862745098, 0.15294117647058825, 0.1568627450980392),
+        (0.8392156862745098, 0.15294117647058825, 0.1568627450980392),
     'CMA-MAEGA(TD3, ES)':
-    (0.5803921568627451, 0.403921568627451, 0.7411764705882353)
+        (0.5803921568627451, 0.403921568627451, 0.7411764705882353)
 })
 
 list1 = ['PPGA', 'SEP-CMA-MAE', 'CMA-MAEGA(TD3, ES)', 'TD3GA']
@@ -227,13 +224,12 @@ def get_results_dataframe(env_name: str,
                           keywords: list[str],
                           name=None,
                           scaling_exp=False):
-    runs = api.runs(
-        'qdrl/PPGA',
-        filters={"$and": [{
-            'tags': algorithm
-        }, {
-            'tags': env_name
-        }]})
+    runs = api.runs('qdrl/PPGA',
+                    filters={"$and": [{
+                        'tags': algorithm
+                    }, {
+                        'tags': env_name
+                    }]})
 
     keys = []
     if algorithm in list1:
@@ -257,8 +253,8 @@ def get_results_dataframe(env_name: str,
     cache_dir = Path('./.cache')
     cache_dir.mkdir(exist_ok=True)
     for run in runs:
-        res = all([key in run.name
-                   for key in keywords]) and '24hr' not in run.name
+        res = all([key in run.name for key in keywords
+                  ]) and '24hr' not in run.name
         if res:
             if algorithm in list1:
                 cached_data_path = cache_dir.joinpath(
@@ -431,10 +427,7 @@ def plot_cdf_data(algorithm: str,
             make_cdf_plot(cfg, algo_cdf, axs[j][k], standalone=True)
         else:
             env_idx = index_of(exp_name)
-            make_cdf_plot(cfg,
-                          algo_cdf,
-                          axs[3][env_idx],
-                          color=HUES[algorithm])
+            make_cdf_plot(cfg, algo_cdf, axs[3][env_idx], color=HUES[algorithm])
 
 
 def load_and_eval_pgame_archive(exp_name, exp_dirs, seed, data_is_saved=False):
@@ -506,11 +499,10 @@ def load_and_eval_ppga_archive(exp_name, exp_dirs, seed, data_is_saved=False):
               f'Avg Fitness: {new_archive.stats.obj_mean} \n'
               f'QD Score: {new_archive.offset_qd_score}')
     else:
-        new_archive = reevaluate_ppga_archive(
-            env_cfg,
-            agent_cfg=agent_cfg,
-            original_archive=original_archive,
-            save_path=save_path)
+        new_archive = reevaluate_ppga_archive(env_cfg,
+                                              agent_cfg=agent_cfg,
+                                              original_archive=original_archive,
+                                              save_path=save_path)
 
     return original_archive, new_archive
 
