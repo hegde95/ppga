@@ -2,6 +2,7 @@
 
 ## Notable Changes
 
+- Moved Python source under a single folder, `ppga/`
 - Switched to `requirements.txt` instead of `environment.yml`
 - Upgraded pyribs to 0.7.1
 - Upgraded to jax 0.4.28 and Brax 0.9.4, particularly by adopting code in the
