@@ -7,7 +7,10 @@ SEED=1111
 
 RUN_NAME="ppo_"$ENV_NAME"_seed_"$SEED
 echo $RUN_NAME
-python -m ppga.RL.collect_ppo_trajectories \
+# Force this script to run on CPU. Since data collection is running in series,
+# it is faster to run on CPU than to keep moving data back and forth between
+# GPU.
+JAX_PLATFORMS=cpu CUDA_VISIBLE_DEVICES=-1 python -m ppga.RL.collect_ppo_trajectories \
   --checkpoint=checkpoints/halfcheetah_brax_model_0_checkpoint \
   --output_file=checkpoints/halfcheetah_trajectories.h5 \
   --max_path=1000 \
