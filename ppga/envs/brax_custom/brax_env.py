@@ -40,6 +40,14 @@ _to_custom_env = {
 
 
 def make_vec_env_brax(cfg):
+    """Creates a vector environment.
+
+    Expects following args in cfg:
+    - env_name
+    - clip_obs_rew
+    - seed
+    - env_batch_size
+    """
     entry_point = functools.partial(brax_custom.create_gym_env,
                                     env_name=cfg.env_name)
     brax_env_name = _to_custom_env[cfg.env_name]['custom_env_name']
@@ -61,6 +69,13 @@ def make_vec_env_brax(cfg):
 
 
 def make_single_env_brax(cfg):
+    """Creates an environment for single agents.
+
+    Expects following args in cfg:
+    - env_name
+    - clip_obs_rew
+    - seed
+    """
     entry_point = functools.partial(brax_custom.create_gym_env,
                                     env_name=cfg.env_name)
     brax_env_name = _to_custom_env[cfg.env_name]['custom_env_name']
