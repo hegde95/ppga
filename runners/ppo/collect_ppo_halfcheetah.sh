@@ -7,7 +7,7 @@ SEED=1111
 
 RUN_NAME="ppo_"$ENV_NAME"_seed_"$SEED
 echo $RUN_NAME
-python -m RL.collect_ppo_trajectories \
+python -m ppga.RL.collect_ppo_trajectories \
   --checkpoint=checkpoints/halfcheetah_brax_model_0_checkpoint \
   --output_file=checkpoints/halfcheetah_trajectories.h5 \
   --max_path=1000 \
