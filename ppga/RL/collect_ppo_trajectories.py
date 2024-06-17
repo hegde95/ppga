@@ -96,10 +96,10 @@ def rollout(actor: Actor, env, max_path: int, num_data: int,
         elif done:
             terminal = True
 
-        traj_data['observations'].append(s)
-        traj_data['actions'].append(a)
-        traj_data['next_observations'].append(ns)
-        traj_data['rewards'].append(rew)
+        traj_data['observations'].append(s.cpu().detach().numpy())
+        traj_data['actions'].append(a.cpu().detach().numpy())
+        traj_data['next_observations'].append(ns.cpu().detach().numpy())
+        traj_data['rewards'].append(rew.cpu().detach().numpy())
         traj_data['terminals'].append(terminal)
         traj_data['timeouts'].append(timeout)
         #  traj_data['logprobs'].append(logprob)
@@ -108,14 +108,16 @@ def rollout(actor: Actor, env, max_path: int, num_data: int,
 
         s = ns
         if terminal or timeout:
+            for k in data:
+                data[k].extend(traj_data[k])
+
             print('Finished trajectory. Len=%d, Returns=%f. Progress:%d/%d' %
                   (t, _returns, len(data['rewards']), num_data))
+
+            traj_data = get_reset_data()
             s = env.reset()
             t = 0
             _returns = 0
-            for k in data:
-                data[k].extend(traj_data[k])
-            traj_data = get_reset_data()
 
     new_data = dict(
         observations=np.array(data['observations']).astype(np.float32),
@@ -123,8 +125,9 @@ def rollout(actor: Actor, env, max_path: int, num_data: int,
         next_observations=np.array(data['next_observations']).astype(
             np.float32),
         rewards=np.array(data['rewards']).astype(np.float32),
-        terminals=np.array(data['terminals']).astype(np.bool),
-        timeouts=np.array(data['timeouts']).astype(np.bool))
+        terminals=np.array(data['terminals']).astype(bool),
+        timeouts=np.array(data['timeouts']).astype(bool))
+
     #  new_data['infos/action_log_probs'] = np.array(data['logprobs']).astype(
     #      np.float32)
     #  new_data['infos/qpos'] = np.array(data['qpos']).astype(np.float32)
@@ -178,10 +181,11 @@ def parse_args():
 
     # algorithm args
     parser.add_argument('--total_timesteps', type=int, default=1000000)
-    parser.add_argument('--env_type',
-                        type=str,
-                        choices=['brax', 'isaac'],
-                        help='Whether to use cpu-envs or gpu-envs for rollouts')
+    parser.add_argument(
+        '--env_type',
+        type=str,
+        choices=['brax', 'isaac'],
+        help='Whether to use cpu-envs or gpu-envs for rollouts')
     # args for brax
     parser.add_argument('--env_batch_size',
                         default=1,
@@ -313,7 +317,8 @@ def main():
         from ppga.envs.brax_custom.brax_env import make_single_env_brax
         single_env = make_single_env_brax(cfg)
     else:
-        raise NotImplementedError(f'{cfg.env_type} is undefined for "env_type"')
+        raise NotImplementedError(
+            f'{cfg.env_type} is undefined for "env_type"')
 
     cfg.batch_size = int(cfg.env_batch_size * cfg.rollout_length)
     cfg.num_envs = int(cfg.env_batch_size)
