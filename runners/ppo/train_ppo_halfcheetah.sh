@@ -28,7 +28,8 @@ python -m ppga.RL.train_ppo \
   --entropy_coef=0.0 \
   --target_kl=0.008 \
   --max_grad_norm=1 \
-  --total_timesteps=100000000
+  --total_timesteps=100000000 \
+  --clip_obs_rew=False
   # --expdir=./experiments/paper_ppga_"$ENV_NAME"
   # --popsize=300 \
   # --total_iterations=2000 \
