@@ -26,6 +26,12 @@ conda activate ./env
 # There are options for installing JAX for CUDA and for CPU in requirements.txt;
 # it is set to CPU by default.
 pip install -r requirements.txt
+
+```
+
+Installing IsaacLab:
+```bash
+https://isaac-sim.github.io/IsaacLab/v2.1.1/source/setup/installation/pip_installation.html
 ```
 
 ## Running PPO for Diverse Generators Work

@@ -1,0 +1,20 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+        "name": "Run isaac_lab test_import.py",
+        "type": "python",
+        "request": "launch",
+        "program": "${workspaceFolder}/ppga/envs/isaac_lab/test_import.py",
+        "console": "integratedTerminal",
+        "cwd": "${workspaceFolder}",
+        "env": {
+            "PYTHONPATH": "${workspaceFolder}"
+        },
+        "args": []
+        },
+    ]
+}
