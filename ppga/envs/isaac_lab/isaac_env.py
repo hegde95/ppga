@@ -1,5 +1,6 @@
 import os
 from typing import Optional
+import argparse
 
 import gymnasium as gym
 import torch
@@ -52,11 +53,8 @@ def _maybe_launch_sim_app(headless: bool = True):
 
     # Create and launch the Omniverse/Isaac app once.
     # Respect headless mode by default for training.
-    class _Args:
-        # Minimal set; add/extend if needed
-        headless = headless
-
-    app_launcher = AppLauncher(_Args())
+    args = argparse.Namespace(headless=headless)
+    app_launcher = AppLauncher(args)
     _simulation_app = app_launcher.app
     return _simulation_app
 
@@ -89,7 +87,8 @@ def make_vec_env_isaac(cfg):
     env_cfg = parse_env_cfg(task_name, device=device, num_envs=num_envs, use_fabric=True)
 
     # Create the gym environment
-    env = gym.make(task_name, cfg=env_cfg)
+    env = gym.make(task_name, cfg=env_cfg, render_mode="rgb_array")
+    env = QDRewardIsaac(env)
 
     # Seed and reset (if seed present)
     if hasattr(cfg, "seed"):
@@ -109,6 +108,25 @@ def make_vec_env_isaac(cfg):
 
     return env
 
+class QDRewardIsaac(gym.Wrapper):
+    """
+    Feet contact, based on the QDReward class in reward.py
+    """
+    def __init__(self, env):
+        super().__init__(env)
+
+    def step(self, action):
+        env_returns = self.env.step(action)
+        # https://isaac-sim.github.io/IsaacLab/main/source/overview/core-concepts/sensors/contact_sensor.html
+        # print(self.env.unwrapped.scene["contact_forces_LF"].data.net_forces_w.shape) # [3000, 2, 3]
+        contact_forces_feet = self.env.unwrapped.scene["contact_forces_feet"].data.net_forces_w
+        contact_forces_norm = torch.norm(contact_forces_feet, dim=-1) # [3000, 2]
+        env_returns[-1]['measures'] = contact_forces_norm
+
+        # feet_body_forces = env_returns[0]['policy'][:, 53:66] # this is the wrench force, which may not be viable
+        # print(torch.norm(feet_body_forces, dim=-1), torch.norm(feet_body_forces, dim=-1).shape)
+        # env_returns[-1]['measures'] = feet_contact.values()
+        return env_returns
 
 def close_isaac():
     """Close the Isaac environment and simulator app if it was launched here."""
@@ -128,3 +146,11 @@ reward_offset = {
     "hopper": 0.0,
     "walker2d": 0.0,
 }
+
+# reward_offset = {
+#     "ant": 3.24,
+#     "humanoid": 0.0,
+#     "halfcheetah": 9.231,
+#     "hopper": 0.9,
+#     "walker2d": 1.413,
+# }

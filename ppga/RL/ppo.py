@@ -367,7 +367,7 @@ class PPO:
               move_mean_agent=False,
               negative_measure_gradients=False):
         global_step = 0
-        self.next_obs = vec_env.reset()
+        self.next_obs = vec_env.reset()[0]['policy']
         if self.cfg.normalize_obs:
             self.next_obs = self.vec_inference.vec_normalize_obs(self.next_obs)
 
@@ -421,14 +421,19 @@ class PPO:
                     self.actions[step] = action
                     self.logprobs[step] = logprob
 
-                    self.next_obs, reward, dones, infos = vec_env.step(action)
+                    env_returns = vec_env.step(action)
+                    self.next_obs = env_returns[0]['policy']
+                    reward = env_returns[1]
+                    dones = env_returns[2] | env_returns[3] # terminated and truncated
+                    infos = env_returns[4]
                     if self.cfg.normalize_obs:
                         self.next_obs = self.vec_inference.vec_normalize_obs(
                             self.next_obs)
 
-                    self.truncated[step] = infos['truncation']
+                    # self.truncated[step] = infos['truncation']
+                    self.truncated[step] = env_returns[3]
                     self.dones[step] = dones.view(-1)
-                    measures = -infos[
+                    measures = -infos[ # what is this
                         'measures'] if negative_measure_gradients else infos[
                             'measures']
                     self.measures[step] = measures
@@ -660,18 +665,18 @@ class PPO:
         :returns: Sum rewards and measures for all agents
         '''
 
-        total_reward = np.zeros(vec_env.num_envs)
+        total_reward = np.zeros(vec_env.unwrapped.num_envs)
         traj_length = 0
         num_steps = 1000
 
-        obs = vec_env.reset()
+        obs = vec_env.reset()[0]['policy']
         obs = obs.to(self.device)
-        dones = torch.BoolTensor([False for _ in range(vec_env.num_envs)])
-        all_dones = torch.zeros((num_steps, vec_env.num_envs)).to(self.device)
+        dones = torch.BoolTensor([False for _ in range(vec_env.unwrapped.num_envs)])
+        all_dones = torch.zeros((num_steps, vec_env.unwrapped.num_envs)).to(self.device)
         measures_acc = torch.zeros(
-            (num_steps, vec_env.num_envs, self.cfg.num_dims)).to(self.device)
+            (num_steps, vec_env.unwrapped.num_envs, self.cfg.num_dims)).to(self.device)
         measures = torch.zeros(
-            (vec_env.num_envs, self.cfg.num_dims)).to(self.device)
+            (vec_env.unwrapped.num_envs, self.cfg.num_dims)).to(self.device)
 
         if self.cfg.normalize_obs and obs_normalizer is not None:
             mean, var = obs_normalizer.obs_rms.mean, obs_normalizer.obs_rms.var
@@ -682,7 +687,12 @@ class PPO:
                     obs = (obs - mean) / (torch.sqrt(var) + 1e-8)
                 acts, _, _ = vec_agent.get_action(obs)
                 acts = acts.to(torch.float32)
-                obs, rew, next_dones, infos = vec_env.step(acts)
+                env_returns = vec_env.step(acts)
+                obs = env_returns[0]['policy']
+                rew = env_returns[1]
+                next_dones = env_returns[2] | env_returns[3] # terminated and truncated
+                infos = env_returns[4]
+
                 measures_acc[traj_length] = infos['measures']
                 obs = obs.to(self.device)
                 total_reward += rew.detach().cpu().numpy(
@@ -694,17 +704,17 @@ class PPO:
         # the first done in each env is where that trajectory ends
         traj_lengths = torch.argmax(all_dones, dim=0) + 1
         # TODO: figure out how to vectorize this
-        for i in range(vec_env.num_envs):
+        for i in range(vec_env.unwrapped.num_envs):
             measures[i] = measures_acc[:traj_lengths[i],
                                        i].sum(dim=0) / traj_lengths[i]
         measures = measures.reshape(vec_agent.num_models,
-                                    vec_env.num_envs // vec_agent.num_models,
+                                    vec_env.unwrapped.num_envs // vec_agent.num_models,
                                     -1).mean(dim=1).detach().cpu().numpy()
 
         total_reward = total_reward.reshape(
             (vec_agent.num_models,
-             vec_env.num_envs // vec_agent.num_models)).mean(axis=1)
-        avg_traj_lengths = traj_lengths.to(torch.float32).reshape((vec_agent.num_models, vec_env.num_envs // vec_agent.num_models)).\
+             vec_env.unwrapped.num_envs // vec_agent.num_models)).mean(axis=1)
+        avg_traj_lengths = traj_lengths.to(torch.float32).reshape((vec_agent.num_models, vec_env.unwrapped.num_envs // vec_agent.num_models)).\
             mean(dim=1).cpu().numpy()
         metadata = np.array([{
             'traj_length': t

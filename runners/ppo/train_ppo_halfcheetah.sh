@@ -9,7 +9,7 @@ RUN_NAME="ppo_"$ENV_NAME"_seed_"$SEED
 echo $RUN_NAME
 python -m ppga.RL.train_ppo \
   --env_name=$ENV_NAME \
-  --env_type=brax \
+  --env_type=jax \
   --rollout_length=128 \
   --use_wandb=True \
   --wandb_group=btjanaka \

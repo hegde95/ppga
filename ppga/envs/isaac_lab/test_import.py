@@ -22,6 +22,7 @@ parser.add_argument("--task", type=str, default="Isaac-Ant-v0", help="Name of th
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
 args_cli = parser.parse_args()
+args_cli.headless = True # slurm cluster addition
 
 # launch omniverse app
 app_launcher = AppLauncher(args_cli)
@@ -40,20 +41,26 @@ from isaaclab_tasks.utils import parse_env_cfg
 
 def main():
     """Random actions agent with Isaac Lab environment."""
+    print("D")
     # create environment configuration
     env_cfg = parse_env_cfg(
         args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
     )
+    print("v")
     # create environment
-    env = gym.make(args_cli.task, cfg=env_cfg)
+    env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array")
+    print("E")
 
     # print info (this is vectorized environment)
     print(f"[INFO]: Gym observation space: {env.observation_space}")
     print(f"[INFO]: Gym action space: {env.action_space}")
     # reset environment
     env.reset()
+    print("A")
     # simulate environment
-    while simulation_app.is_running():
+    # while simulation_app.is_running():
+    for i in range(1000):
+        print(i)
         # run everything in inference mode
         with torch.inference_mode():
             # sample actions from -1 to 1

@@ -7,7 +7,7 @@ SEED=1111
 
 RUN_NAME="paper_ppga_"$ENV_NAME"_seed_"$SEED
 echo $RUN_NAME
-python -m ppga.algorithm.train_ppga \
+python -m ppga.algorithm.train_ppga_isaac \
   --env_name=$ENV_NAME \
   --rollout_length=128 \
   --use_wandb=True \
@@ -25,7 +25,7 @@ python -m ppga.algorithm.train_ppga \
   --clip_obs_rew=True \
   --wandb_run_name=$RUN_NAME\
   --popsize=300 \
-  --env_batch_size=3000 \
+  --env_batch_size=600 \
   --learning_rate=0.0003 \
   --vf_coef=2 \
   --entropy_coef=0.0 \
