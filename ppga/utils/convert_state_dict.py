@@ -91,71 +91,73 @@ def get_elite_dataloader(checkpoint_dir: str,
 
 # ── Conversion script ─────────────────────────────────────────────────────────
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--archive_path', type=str, required=True)
-parser.add_argument('--output_dir',   type=str, required=True)
-args = parser.parse_args()
+if __name__ == "__main__":
 
-with open(args.archive_path, "rb") as f:
-    archive = pickle.load(f)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--archive_path', type=str, required=True)
+    parser.add_argument('--output_dir',   type=str, required=True)
+    args = parser.parse_args()
 
-df = archive
-print(f'Archive loaded with {len(df)} elites')
-os.makedirs(args.output_dir, exist_ok=True)
+    with open(args.archive_path, "rb") as f:
+        archive = pickle.load(f)
 
-obs_shape         = (244,)
-action_shape      = (17,)
-normalize_obs     = True
-normalize_returns = False
-solution_cols     = [c for c in df.columns if c.startswith("solution_")]
-measures_cols     = [c for c in df.columns if c.startswith("measures_")]
+    df = archive
+    print(f'Archive loaded with {len(df)} elites')
+    os.makedirs(args.output_dir, exist_ok=True)
 
-for i, (_, elite_row) in enumerate(df.iterrows()):
-    metadata     = elite_row["metadata"]
-    flat_weights = elite_row[solution_cols].values.astype(np.float32)
+    obs_shape         = (244,)
+    action_shape      = (17,)
+    normalize_obs     = True
+    normalize_returns = False
+    solution_cols     = [c for c in df.columns if c.startswith("solution_")]
+    measures_cols     = [c for c in df.columns if c.startswith("measures_")]
 
-    model = Actor(obs_shape, action_shape, normalize_obs, normalize_returns)
-    model.deserialize(flat_weights)
+    for i, (_, elite_row) in enumerate(df.iterrows()):
+        metadata     = elite_row["metadata"]
+        flat_weights = elite_row[solution_cols].values.astype(np.float32)
 
-    # Override actor_logstd with zeros to match ppo.evaluate() behavior.
-    # train_ppga.py lines 570-571 overwrote each branched agent's logstd with
-    # mean_agent.actor_logstd before evaluation — the CMA-ES sampled value in
-    # solution_cols was never used during the evaluation that produced `objective`.
-    model.actor_logstd.data = torch.zeros_like(model.actor_logstd.data)
+        model = Actor(obs_shape, action_shape, normalize_obs, normalize_returns)
+        model.deserialize(flat_weights)
 
-    # Restore obs_normalizer from metadata
-    if normalize_obs and metadata is not None:
-        model.obs_normalizer.load_state_dict(metadata["obs_normalizer"])
-        mean_sum = model.obs_normalizer.obs_rms.mean.abs().sum().item()
-        if mean_sum < 1e-6:
-            print(f"  WARNING elite {i}: obs_rms.mean is all zeros after loading!")
+        # Override actor_logstd with zeros to match ppo.evaluate() behavior.
+        # train_ppga.py lines 570-571 overwrote each branched agent's logstd with
+        # mean_agent.actor_logstd before evaluation — the CMA-ES sampled value in
+        # solution_cols was never used during the evaluation that produced `objective`.
+        model.actor_logstd.data = torch.zeros_like(model.actor_logstd.data)
 
-    state_dict = model.state_dict()
+        # Restore obs_normalizer from metadata
+        if normalize_obs and metadata is not None:
+            model.obs_normalizer.load_state_dict(metadata["obs_normalizer"])
+            mean_sum = model.obs_normalizer.obs_rms.mean.abs().sum().item()
+            if mean_sum < 1e-6:
+                print(f"  WARNING elite {i}: obs_rms.mean is all zeros after loading!")
 
-    if normalize_obs:
-        norm_sd = model.obs_normalizer.state_dict()
-        for k, v in norm_sd.items():
-            full_key = f"obs_normalizer.{k}"
-            if full_key not in state_dict:
-                state_dict[full_key] = v
-                print(f"  [elite {i}] Injected {full_key} into state_dict (was missing)")
+        state_dict = model.state_dict()
 
-    state_dict["actor_logstd"] = state_dict["actor_logstd"].squeeze()
+        if normalize_obs:
+            norm_sd = model.obs_normalizer.state_dict()
+            for k, v in norm_sd.items():
+                full_key = f"obs_normalizer.{k}"
+                if full_key not in state_dict:
+                    state_dict[full_key] = v
+                    print(f"  [elite {i}] Injected {full_key} into state_dict (was missing)")
 
-    objective   = float(elite_row["objective"])
-    measures    = elite_row[measures_cols].values.astype(np.float32)
-    traj_length = float(metadata.get("traj_length", -1)) if metadata is not None else -1
-    obs_normalizer_state = model.obs_normalizer.state_dict() if normalize_obs else None
+        state_dict["actor_logstd"] = state_dict["actor_logstd"]
 
-    output_path = os.path.join(args.output_dir, f'elite_checkpoint_{i}.pt')
-    torch.save({
-        "model_state_dict":     state_dict,
-        "obs_normalizer_state": obs_normalizer_state,
-        "objective":            objective,
-        "measures":             measures,
-        "traj_length":          traj_length,
-        "elite_index":          i,
-    }, output_path)
-    print(f'[{i+1}/{len(df)}] Saved {output_path} '
-          f'(obj={objective:.1f}, traj_len={traj_length:.0f}, '
-          f'obs_mean[:3]={model.obs_normalizer.obs_rms.mean[:3].tolist()})')
+        objective   = float(elite_row["objective"])
+        measures    = elite_row[measures_cols].values.astype(np.float32)
+        traj_length = float(metadata.get("traj_length", -1)) if metadata is not None else -1
+        obs_normalizer_state = model.obs_normalizer.state_dict() if normalize_obs else None
+
+        output_path = os.path.join(args.output_dir, f'elite_checkpoint_{i}.pt')
+        torch.save({
+            "model_state_dict":     state_dict,
+            "obs_normalizer_state": obs_normalizer_state,
+            "objective":            objective,
+            "measures":             measures,
+            "traj_length":          traj_length,
+            "elite_index":          i,
+        }, output_path)
+        print(f'[{i+1}/{len(df)}] Saved {output_path} '
+            f'(obj={objective:.1f}, traj_len={traj_length:.0f}, '
+            f'obs_mean[:3]={model.obs_normalizer.obs_rms.mean[:3].tolist()})')
