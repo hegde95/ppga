@@ -7,13 +7,19 @@ each trajectory on a set of measurable functions.  Results are reported
 per-function (no cross-function collapse).
 
 Usage:
-    python eval_policy.py \
-        --checkpoint_dir data/checkpoints \
+    python eval_policies.py \
+        --archive_path data/archive_df.pkl \
         --env_name humanoid \
         --env_batch_size 32 \
         --rollout_length 1000 \
         --num_evals 10 \
         --seed 0
+
+Notes on env interface (confirmed via inspect_env.py):
+    - env.step() returns a 4-tuple: (obs, reward, terminated, info)
+      The info dict is the 4th element; there is no separate truncated tensor.
+    - pipeline_state is NOT exposed in info (first_pipeline_state is None).
+      All measurable functions therefore use pre-computed scalar fields from info.
 
 Available info fields (confirmed):
     x_velocity, y_velocity          — root body velocities
@@ -29,7 +35,7 @@ Available info fields (confirmed):
 
 Dependencies:
     ppga (Actor, make_vec_env_brax)
-    convert_state_dict.py  → get_elite_dataloader
+    convert_state_dict.py  → EliteCheckpointDataset, get_elite_dataloader
 """
 
 import argparse
@@ -43,7 +49,7 @@ from box import Box
 from ppga.envs.brax_custom.brax_env import make_vec_env_brax
 from ppga.models.actor_critic import Actor
 
-from ppga.utils.convert_state_dict import EliteCheckpointDataset, get_elite_dataloader
+from convert_state_dict import EliteCheckpointDataset, get_elite_dataloader
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -323,17 +329,6 @@ def com_height_stability(traj: Trajectory) -> torch.Tensor:
 
 
 
-def total_reward(traj: Trajectory) -> torch.Tensor:
-    """
-    Sum of rewards collected over the full rollout.
-
-    The most direct measure of policy quality — equivalent to the objective
-    used during training (modulo episode boundaries and discounting).
-
-    Returns: Tensor[B]
-    """
-    rew = torch.stack(traj.rewards, dim=0)   # [T, B]
-    return rew.sum(dim=0)                     # [B]
 
 
 def foot_contact_rate(traj: Trajectory) -> torch.Tensor:
@@ -416,6 +411,31 @@ def speed_efficiency(traj: Trajectory) -> torch.Tensor:
     cost = torch.stack(traj.ctrl_cost,  dim=0).abs().mean(dim=0)  # [B]  ≥ 0
     return vel / (cost + 1e-8)                                # [B]
 
+
+def arm_stability(traj: Trajectory) -> torch.Tensor:
+    """
+    Negative mean squared deviation of arm joint actions from their
+    time-averaged value.
+
+    Measures how much the arm joints oscillate during locomotion.  A stable
+    policy holds its arms in a consistent pose; an unstable one swings them
+    erratically.  Lower variance → higher score after negation.
+
+    Arm joint indices for the standard Brax humanoid (17 actuators):
+        11: right_shoulder1   12: right_shoulder2   13: right_elbow
+        14: left_shoulder1    15: left_shoulder2    16: left_elbow
+    Adjust ARM_JOINT_INDICES below if your env uses a different ordering.
+
+    Returns: Tensor[B]
+    """
+    ARM_JOINT_INDICES = [11, 12, 13, 14, 15, 16]
+
+    acts = torch.stack(traj.actions, dim=0)              # [T, B, A]
+    arm  = acts[:, :, ARM_JOINT_INDICES]                 # [T, B, 6]
+    mean = arm.mean(dim=0, keepdim=True)                 # [1, B, 6]
+    var  = ((arm - mean) ** 2).mean(dim=(0, 2))          # [B]
+    return -var                                          # [B]  negate → lower variance is better
+
 # Registry: name → function.  Add / remove freely.
 MEASURABLES: Dict[str, Callable[[Trajectory], torch.Tensor]] = {
     'avg_forward_speed':    avg_forward_speed,
@@ -423,12 +443,12 @@ MEASURABLES: Dict[str, Callable[[Trajectory], torch.Tensor]] = {
     'survival_length':      survival_length,
     'lateral_stability':    lateral_stability,
     'com_height_stability': com_height_stability,
-    'total_reward':         total_reward,
     'foot_contact_rate':    foot_contact_rate,
     'gait_symmetry':        gait_symmetry,
     'action_smoothness':    action_smoothness,
     'distance_traveled':    distance_traveled,
     'speed_efficiency':     speed_efficiency,
+    'arm_stability':        arm_stability,
 }
 
 
@@ -446,120 +466,230 @@ def load_actor(checkpoint: dict, device: torch.device) -> Actor:
         actor.obs_normalizer.load_state_dict(checkpoint['obs_normalizer_state'])
     return actor.to(device)
 # ─────────────────────────────────────────────────────────────────────────────
-# Eval loop
+# HDF5 serialisation
+# ─────────────────────────────────────────────────────────────────────────────
+
+def save_trajectory_h5(traj: Trajectory, scores: dict, path: str):
+    """Save one trajectory's raw fields and pre-computed scores to HDF5.
+
+    File layout:
+        /fields/obs            float32 [T, B, obs_dim]
+        /fields/actions        float32 [T, B, act_dim]
+        /fields/rewards        float32 [T, B]
+        /fields/terminated     float32 [T, B]
+        /fields/x_velocity     float32 [T, B]
+        /fields/y_velocity     float32 [T, B]
+        /fields/x_position     float32 [T, B]
+        /fields/ctrl_cost      float32 [T, B]
+        /fields/qd_measures    float32 [T, B, 2]
+        /scores/<fn_name>      float32 [B]   — one value per parallel env
+    """
+    import h5py, numpy as np, os
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with h5py.File(path, 'w') as f:
+        g = f.create_group('fields')
+        def _stack(lst): return torch.stack(lst, dim=0).numpy()
+        g.create_dataset('obs',        data=_stack(traj.obs),        compression='gzip')
+        g.create_dataset('actions',    data=_stack(traj.actions),    compression='gzip')
+        g.create_dataset('rewards',    data=_stack(traj.rewards),    compression='gzip')
+        g.create_dataset('terminated', data=_stack(traj.terminated), compression='gzip')
+        g.create_dataset('x_velocity', data=_stack(traj.x_velocity), compression='gzip')
+        g.create_dataset('y_velocity', data=_stack(traj.y_velocity), compression='gzip')
+        g.create_dataset('x_position', data=_stack(traj.x_position), compression='gzip')
+        g.create_dataset('ctrl_cost',  data=_stack(traj.ctrl_cost),  compression='gzip')
+        g.create_dataset('qd_measures',data=_stack(traj.qd_measures),compression='gzip')
+        sg = f.create_group('scores')
+        for fn_name, score_tensor in scores.items():
+            sg.create_dataset(fn_name, data=score_tensor.numpy())
+
+
+def load_trajectory_from_h5(path: str) -> Tuple[Trajectory, dict]:
+    """Load raw fields and pre-computed scores from an HDF5 file.
+
+    Returns:
+        traj   : Trajectory with list fields populated (each element is [B, ...]
+                 rather than [T, B, ...] — the time dimension is split back out)
+        scores : dict[fn_name → Tensor[B]]
+    """
+    import h5py
+    traj = Trajectory()
+    with h5py.File(path, 'r') as f:
+        def _split(key):
+            arr = torch.from_numpy(f['fields'][key][:])   # [T, B, ...]
+            return [arr[t] for t in range(arr.shape[0])]  # list of [B, ...]
+
+        traj.obs         = _split('obs')
+        traj.actions     = _split('actions')
+        traj.rewards     = _split('rewards')
+        traj.terminated  = _split('terminated')
+        traj.x_velocity  = _split('x_velocity')
+        traj.y_velocity  = _split('y_velocity')
+        traj.x_position  = _split('x_position')
+        traj.ctrl_cost   = _split('ctrl_cost')
+        traj.qd_measures = _split('qd_measures')
+        # truncation mirrors terminated for scoring purposes
+        traj.truncated   = traj.terminated
+        traj.truncation  = traj.terminated
+
+        scores = {k: torch.from_numpy(f['scores'][k][:])
+                  for k in f['scores']}
+    return traj, scores
+
+
+def load_scores_from_h5(path: str) -> dict:
+    """Load only the pre-computed scores from an HDF5 file (cheap)."""
+    import h5py
+    with h5py.File(path, 'r') as f:
+        return {k: torch.from_numpy(f['scores'][k][:]) for k in f['scores']}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Eval result dataclass
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
 class EvalResult:
-    """Binary scores for a single pair of policies across all measurable functions."""
+    """Comparison results for one (policy_i, policy_j, traj_k) triple."""
     policy_a_index: int
     policy_b_index: int
-    # scores[fn_name] = +1 if A wins, -1 if B wins, 0 if tie
-    scores: Dict[str, int] = field(default_factory=dict)
-    # Raw per-env scores for deeper analysis: [B] each
+    traj_index:     int          # which trajectory index k this corresponds to
+    scores: Dict[str, int]       = field(default_factory=dict)   # +1 / -1 / 0
     raw_a:  Dict[str, torch.Tensor] = field(default_factory=dict)
     raw_b:  Dict[str, torch.Tensor] = field(default_factory=dict)
 
 
-def run_eval(cfg) -> Tuple[torch.Tensor, List[EvalResult]]:
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 1: roll out K trajectories per policy, save to HDF5
+# ─────────────────────────────────────────────────────────────────────────────
+
+def rollout_phase(cfg, env, all_ckpts: list, traj_dir: str, device: torch.device):
     """
-    Exhaustive pairwise evaluation.
+    For each of N policies, roll out K trajectories and save each to:
+        <traj_dir>/elite{idx:04d}_traj{k:02d}.h5
 
-    For each of the N*(N-1)/2 pairs:
-      a. Sample the pair from the dataset
-      b. Roll out policy i, score it, free from GPU
-      c. Roll out policy j, score it, free from GPU
-      d. Collapse scores to binary winner per function
-
-    No trajectories are cached between pairs — memory stays flat regardless
-    of archive size.
-
-    Returns:
-        binary_matrix : Tensor[num_fns, num_pairs, 1]  dtype=int8
-                        +1 = policy i wins, -1 = policy j wins, 0 = tie
-        results       : List[EvalResult] one per pair
+    Skips trajectories whose HDF5 already exists (safe to resume).
+    Videos are saved here if --save_video is set.
     """
-    device   = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    import os
     fn_names = list(MEASURABLES.keys())
-    num_fns  = len(fn_names)
+    N, K = len(all_ckpts), cfg.num_trajectories
+    os.makedirs(traj_dir, exist_ok=True)
 
-    # ── Environment ──────────────────────────────────────────────────────────
-    env_cfg = Box({
-        'env_name':       cfg.env_name,
-        'env_batch_size': cfg.env_batch_size,
-        'seed':           cfg.seed,
-        'clip_obs_rew':   cfg.clip_obs_rew,
-    })
-    env = make_vec_env_brax(env_cfg)
+    print(f'\n{"═"*60}')
+    print(f'Phase 1: rolling out {K} trajectories × {N} policies')
+    print(f'{"═"*60}')
 
-    # ── Dataset ───────────────────────────────────────────────────────────────
-    dataset   = EliteCheckpointDataset(cfg.checkpoint_dir)
-    N         = len(dataset)
-    all_ckpts = [dataset[i] for i in range(N)]
+    for i, ckpt in enumerate(all_ckpts):
+        elite_idx = int(ckpt['elite_index'])
+        obj       = float(ckpt['objective'])
+
+        # Check which trajectories still need to be rolled out
+        missing = [k for k in range(K)
+                   if not os.path.exists(_traj_path(traj_dir, elite_idx, k))]
+        if not missing:
+            print(f'  [{i+1}/{N}] elite #{elite_idx} — all {K} trajectories already exist, skipping')
+            continue
+
+        print(f'\n  [{i+1}/{N}] elite #{elite_idx}  (obj={obj:.2f}) — rolling out {len(missing)} trajectories')
+        actor = load_actor(ckpt, device)
+
+        for k in missing:
+            capture = cfg.save_video and k == 0   # only capture video for traj 0
+            traj = rollout(actor, env, cfg.rollout_length, device,
+                           capture_video=capture,
+                           video_subsample=cfg.video_subsample)
+
+            # Save video before clearing brax_states
+            if capture and traj.brax_states:
+                vid_path = os.path.join(cfg.video_dir, f'elite{elite_idx:04d}.html')
+                save_trajectory_video(env, traj.brax_states, vid_path)
+            traj.brax_states.clear()
+
+            # Compute scores and save HDF5
+            scores = {fn: MEASURABLES[fn](traj) for fn in fn_names}   # each [B]
+            h5_path = _traj_path(traj_dir, elite_idx, k)
+            save_trajectory_h5(traj, scores, h5_path)
+            print(f'    traj {k}: saved → {h5_path}')
+            del traj
+
+        actor.cpu(); del actor; torch.cuda.empty_cache()
+
+
+def _traj_path(traj_dir: str, elite_idx: int, k: int) -> str:
+    return f'{traj_dir}/elite{elite_idx:04d}_traj{k:02d}.h5'
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 2: compare K matched pairs for every (i, j) policy pair
+# ─────────────────────────────────────────────────────────────────────────────
+
+def compare_phase(cfg, all_ckpts: list, traj_dir: str) -> Tuple[torch.Tensor, List[EvalResult]]:
+    """
+    Load pre-computed scores from HDF5 files and build the binary matrix.
+
+    For each of the N*(N-1)/2 pairs and each of the K matched trajectory
+    indices, compare policy i's traj_k against policy j's traj_k.
+
+    Binary matrix shape: [num_fns, num_pairs, K]
+        +1 = policy i wins on traj k
+        -1 = policy j wins on traj k
+         0 = tie
+    """
+    fn_names  = list(MEASURABLES.keys())
+    num_fns   = len(fn_names)
+    N, K      = len(all_ckpts), cfg.num_trajectories
     all_pairs = list(itertools.combinations(range(N), 2))
     num_pairs = len(all_pairs)
 
-    print(f'[eval] env={cfg.env_name}, B={cfg.env_batch_size}, '
-          f'rollout_length={cfg.rollout_length}, device={device}')
-    print(f'[eval] {N} checkpoints → {num_pairs} pairs')
+    print(f'\n{"═"*60}')
+    print(f'Phase 2: comparing {num_pairs} pairs × {K} trajectories')
+    print(f'{"═"*60}')
 
-    binary_matrix = torch.zeros(num_fns, num_pairs, 1, dtype=torch.int8)
+    # Load all scores upfront (scores only, not raw fields — cheap)
+    print('  Loading scores from HDF5...')
+    # all_policy_scores[i][k] = dict[fn_name → Tensor[B]]
+    all_policy_scores = []
+    for i, ckpt in enumerate(all_ckpts):
+        elite_idx = int(ckpt['elite_index'])
+        traj_scores = []
+        for k in range(K):
+            path = _traj_path(traj_dir, elite_idx, k)
+            traj_scores.append(load_scores_from_h5(path))
+        all_policy_scores.append(traj_scores)
+
+    binary_matrix = torch.zeros(num_fns, num_pairs, K, dtype=torch.int8)
     all_results: List[EvalResult] = []
 
     for pair_idx, (i, j) in enumerate(all_pairs):
-        ckpt_i = all_ckpts[i]
-        ckpt_j = all_ckpts[j]
-        idx_i  = int(ckpt_i['elite_index'])
-        idx_j  = int(ckpt_j['elite_index'])
+        idx_i = int(all_ckpts[i]['elite_index'])
+        idx_j = int(all_ckpts[j]['elite_index'])
 
-        print(f'\n── Pair {pair_idx+1}/{num_pairs}: elite #{idx_i} vs #{idx_j} ──')
+        print(f'\n  Pair {pair_idx+1}/{num_pairs}: elite #{idx_i} vs #{idx_j}')
+        print(f'     {"Function":<25}  ' + '  '.join(f'traj{k:02d}' for k in range(K)))
+        print('     ' + '-' * (27 + 8 * K))
 
-        # ── a. Roll out policy i ──────────────────────────────────────────────
-        actor_i = load_actor(ckpt_i, device)
-        traj_i  = rollout(actor_i, env, cfg.rollout_length, device,
-                          capture_video=cfg.save_video,
-                          video_subsample=cfg.video_subsample)
-        actor_i.cpu(); del actor_i; torch.cuda.empty_cache()
-        if cfg.save_video and traj_i.brax_states:
-            save_trajectory_video(env, traj_i.brax_states,
-                                  f'{cfg.video_dir}/pair{pair_idx+1:04d}_elite{idx_i}.html')
-            traj_i.brax_states.clear()
+        for k in range(K):
+            scores_i = torch.stack([all_policy_scores[i][k][fn] for fn in fn_names]).mean(dim=1)  # [num_fns]
+            scores_j = torch.stack([all_policy_scores[j][k][fn] for fn in fn_names]).mean(dim=1)  # [num_fns]
 
-        # ── b. Roll out policy j ──────────────────────────────────────────────
-        actor_j = load_actor(ckpt_j, device)
-        traj_j  = rollout(actor_j, env, cfg.rollout_length, device,
-                          capture_video=cfg.save_video,
-                          video_subsample=cfg.video_subsample)
-        actor_j.cpu(); del actor_j; torch.cuda.empty_cache()
-        if cfg.save_video and traj_j.brax_states:
-            save_trajectory_video(env, traj_j.brax_states,
-                                  f'{cfg.video_dir}/pair{pair_idx+1:04d}_elite{idx_j}.html')
-            traj_j.brax_states.clear()
+            binary = torch.sign(scores_i - scores_j).to(torch.int8)   # [num_fns]
+            binary_matrix[:, pair_idx, k] = binary
 
-        # ── c. Score each measurable → (num_fns,) per policy ─────────────────
-        scores_i = torch.tensor([MEASURABLES[fn](traj_i).mean().item() for fn in fn_names])
-        scores_j = torch.tensor([MEASURABLES[fn](traj_j).mean().item() for fn in fn_names])
-        del traj_i, traj_j
+            result = EvalResult(policy_a_index=idx_i, policy_b_index=idx_j, traj_index=k)
+            for fn_idx, fn_name in enumerate(fn_names):
+                b = int(binary[fn_idx].item())
+                result.scores[fn_name] = b
+                result.raw_a[fn_name]  = all_policy_scores[i][k][fn_name]
+                result.raw_b[fn_name]  = all_policy_scores[j][k][fn_name]
+            all_results.append(result)
 
-        # ── d. Collapse to binary (num_fns, 1) ───────────────────────────────
-        binary = torch.sign(scores_i - scores_j).to(torch.int8)
-        binary_matrix[:, pair_idx, :] = binary.unsqueeze(1)
-
-        # ── Logging ───────────────────────────────────────────────────────────
-        result = EvalResult(policy_a_index=idx_i, policy_b_index=idx_j)
-        print(f'     {"Function":<25}  {"i score":>10}  {"j score":>10}  winner')
-        print('     ' + '-' * 58)
+        # Print per-function summary across K trajectories
         for fn_idx, fn_name in enumerate(fn_names):
-            si  = scores_i[fn_idx].item()
-            sj  = scores_j[fn_idx].item()
-            b   = int(binary[fn_idx].item())
-            win = f'i (#{idx_i})' if b == 1 else (f'j (#{idx_j})' if b == -1 else 'TIE')
-            result.scores[fn_name] = b
-            result.raw_a[fn_name]  = scores_i[fn_idx:fn_idx+1]
-            result.raw_b[fn_name]  = scores_j[fn_idx:fn_idx+1]
-            print(f'     {fn_name:<25}  {si:>+10.4f}  {sj:>+10.4f}  {win}')
-
-        all_results.append(result)
+            row = '  '.join(
+                f'{binary_matrix[fn_idx, pair_idx, k].item():>+6}'
+                for k in range(K)
+            )
+            print(f'     {fn_name:<25}  {row}')
 
     return binary_matrix, all_results
 
@@ -569,39 +699,33 @@ def run_eval(cfg) -> Tuple[torch.Tensor, List[EvalResult]]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def print_summary(binary_matrix: torch.Tensor, results: List[EvalResult]):
-    """Print aggregate win/loss/tie counts from the binary matrix.
+    """
+    Aggregate win/loss/tie counts across all pairs and all K trajectories.
 
-    Args:
-        binary_matrix : Tensor[num_functions, num_pairs, 1]  dtype=int8
-        results       : List[EvalResult] for pair-label lookup
+    binary_matrix shape: [num_fns, num_pairs, K]
     """
     fn_names  = list(MEASURABLES.keys())
     num_pairs = binary_matrix.shape[1]
+    K         = binary_matrix.shape[2]
 
-    wins_a = (binary_matrix == +1).sum(dim=1).squeeze(1)   # (num_fns,)
-    wins_b = (binary_matrix == -1).sum(dim=1).squeeze(1)   # (num_fns,)
-    ties   = (binary_matrix ==  0).sum(dim=1).squeeze(1)   # (num_fns,)
+    # Aggregate over both pairs and trajectories
+    wins_a = (binary_matrix == +1).sum(dim=(1, 2))   # [num_fns]
+    wins_b = (binary_matrix == -1).sum(dim=(1, 2))   # [num_fns]
+    ties   = (binary_matrix ==  0).sum(dim=(1, 2))   # [num_fns]
+    total  = num_pairs * K
 
-    print('\n' + '=' * 62)
-    print(f'Summary  —  {num_pairs} pairs, {len(fn_names)} functions')
-    print('=' * 62)
-    print(f'  {"Function":<25}  {"A wins":>8}  {"B wins":>8}  {"Ties":>6}')
-    print('  ' + '-' * 55)
+    print('\n' + '=' * 66)
+    print(f'Summary  —  {num_pairs} pairs × {K} trajectories = {total} comparisons')
+    print('=' * 66)
+    print(f'  {"Function":<25}  {"i wins":>8}  {"j wins":>8}  {"Ties":>6}  {"i win%":>8}')
+    print('  ' + '-' * 62)
     for fi, fn in enumerate(fn_names):
-        print(f'  {fn:<25}  {wins_a[fi].item():>8}  {wins_b[fi].item():>8}  {ties[fi].item():>6}')
+        wa, wb, t = wins_a[fi].item(), wins_b[fi].item(), ties[fi].item()
+        pct = 100.0 * wa / total if total > 0 else 0.0
+        print(f'  {fn:<25}  {wa:>8}  {wb:>8}  {t:>6}  {pct:>7.1f}%')
     print()
-
-    print('Pair-level binary matrix  (rows=functions, cols=pairs, +1=A wins, -1=B wins):')
-    # Print header row of pair labels
-    labels = [f'#{r.policy_a_index}v#{r.policy_b_index}' for r in results]
-    col_w  = max(len(l) for l in labels) + 1
-    print('  ' + ' '.join(f'{fn[:8]:>8}' for fn in fn_names))
-    for pi, label in enumerate(labels):
-        row = ' '.join(f'{binary_matrix[fi, pi, 0].item():>8}' for fi in range(len(fn_names)))
-        print(f'  {label:<{col_w}} {row}')
-
-    print()
-    print(f'binary_matrix shape: {tuple(binary_matrix.shape)}  (num_functions, num_pairs, 1)')
+    print(f'binary_matrix shape: {tuple(binary_matrix.shape)}  '
+          f'(num_functions, num_pairs, K)')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -610,42 +734,67 @@ def print_summary(binary_matrix: torch.Tensor, results: List[EvalResult]):
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Exhaustive pairwise policy evaluator')
-    parser.add_argument('--checkpoint_dir',  type=str, required=True,
-                        help='Directory containing elite_checkpoint_*.pt files')
+    parser.add_argument('--archive_path',     type=str, required=True,
+                        help='Path to pickled pyribs archive DataFrame (.pkl)')
     parser.add_argument('--output_dir',       type=str, required=True,
-                        help='Experiment output directory. '
-                             'binary_matrix.pt is saved here; '
-                             'videos go in <output_dir>/videos/')
-    parser.add_argument('--env_name',        type=str, default='humanoid')
-    parser.add_argument('--env_batch_size',  type=int, default=32,
+                        help='Experiment output directory.  Layout:\n'
+                             '  <output_dir>/trajectories/  — HDF5 files\n'
+                             '  <output_dir>/videos/        — HTML videos\n'
+                             '  <output_dir>/binary_matrix.pt')
+    parser.add_argument('--env_name',         type=str, default='humanoid')
+    parser.add_argument('--env_batch_size',   type=int, default=32,
                         help='Parallel envs per rollout (the B dimension)')
-    parser.add_argument('--rollout_length',  type=int, default=1000,
-                        help='Steps collected per policy rollout')
-    parser.add_argument('--seed',            type=int, default=0)
-    parser.add_argument('--clip_obs_rew',    action='store_true', default=False)
-    parser.add_argument('--save_video',      action='store_true', default=False,
-                        help='Render rollout videos as self-contained HTML files')
-    parser.add_argument('--video_subsample', type=int, default=2,
+    parser.add_argument('--rollout_length',   type=int, default=1000,
+                        help='Steps per rollout')
+    parser.add_argument('--num_trajectories', type=int, default=3,
+                        help='Number of trajectories K to roll out per policy')
+    parser.add_argument('--seed',             type=int, default=0)
+    parser.add_argument('--clip_obs_rew',     action='store_true', default=False)
+    parser.add_argument('--save_video',       action='store_true', default=False,
+                        help='Render trajectory 0 of each policy as an HTML video')
+    parser.add_argument('--video_subsample',  type=int, default=2,
                         help='Capture every Nth frame during rollout')
     return Box(vars(parser.parse_args()))
 
 
 if __name__ == '__main__':
     import os
-    cfg = parse_args()
-    os.makedirs(cfg.output_dir, exist_ok=True)
+    cfg    = parse_args()
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # Patch video_dir to live inside output_dir
+    os.makedirs(cfg.output_dir, exist_ok=True)
+    traj_dir      = os.path.join(cfg.output_dir, 'trajectories')
     cfg.video_dir = os.path.join(cfg.output_dir, 'videos')
     if cfg.save_video:
         os.makedirs(cfg.video_dir, exist_ok=True)
 
-    binary_matrix, results = run_eval(cfg)
+    env_cfg = Box({
+        'env_name':       cfg.env_name,
+        'env_batch_size': cfg.env_batch_size,
+        'seed':           cfg.seed,
+        'clip_obs_rew':   cfg.clip_obs_rew,
+    })
+    env       = make_vec_env_brax(env_cfg)
+    dataset   = EliteCheckpointDataset(cfg.archive_path)
+    all_ckpts = [dataset[i] for i in range(len(dataset))]
+
+    print(f'[eval] env={cfg.env_name}, B={cfg.env_batch_size}, '
+          f'T={cfg.rollout_length}, K={cfg.num_trajectories}, device={device}')
+    print(f'[eval] {len(all_ckpts)} checkpoints, output → {cfg.output_dir}')
+
+    # ── Phase 1: rollout ─────────────────────────────────────────────────────
+    rollout_phase(cfg, env, all_ckpts, traj_dir, device)
+
+    # ── Phase 2: compare ─────────────────────────────────────────────────────
+    binary_matrix, results = compare_phase(cfg, all_ckpts, traj_dir)
     print_summary(binary_matrix, results)
 
     matrix_path = os.path.join(cfg.output_dir, 'binary_matrix.pt')
-    torch.save({'binary_matrix': binary_matrix,
-                'fn_names':      list(MEASURABLES.keys()),
-                'pair_indices':  [(r.policy_a_index, r.policy_b_index) for r in results]},
-               matrix_path)
-    print(f'[saved] binary_matrix → {matrix_path}')
+    torch.save({
+        'binary_matrix': binary_matrix,                                          # [num_fns, num_pairs, K]
+        'fn_names':      list(MEASURABLES.keys()),
+        'pair_indices':  [(r.policy_a_index, r.policy_b_index) for r in results
+                         if r.traj_index == 0],                                  # one entry per pair
+        'num_trajectories': cfg.num_trajectories,
+    }, matrix_path)
+    print(f'\n[saved] binary_matrix → {matrix_path}')

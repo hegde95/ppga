@@ -9,35 +9,85 @@ from ppga.models.actor_critic import Actor
 
 # ── Dataset / DataLoader ──────────────────────────────────────────────────────
 
-class EliteCheckpointDataset(Dataset):
-    """PyTorch Dataset over a directory of elite_checkpoint_*.pt files.
+OBS_SHAPE         = (244,)
+ACTION_SHAPE      = (17,)
+NORMALIZE_OBS     = True
+NORMALIZE_RETURNS = False
 
-    Each item is the full checkpoint dict:
+
+class EliteCheckpointDataset(Dataset):
+    """PyTorch Dataset that reads elites directly from a pyribs archive pickle.
+
+    Deserializes flat weight vectors into Actor state_dicts on-the-fly,
+    exactly as the conversion script does, with no intermediate .pt files.
+
+    Each item is a dict matching the format produced by convert_state_dict.py:
         {
             'model_state_dict':     OrderedDict,
             'obs_normalizer_state': OrderedDict | None,
-            'objective':            float tensor,
-            'measures':             float tensor  [num_dims],
-            'traj_length':          float tensor,
-            'elite_index':          int tensor,
+            'objective':            float,
+            'measures':             np.ndarray  [num_dims],
+            'traj_length':          float,
+            'elite_index':          int,
         }
+
+    Args:
+        archive_path: path to the pickled pyribs archive DataFrame (.pkl)
     """
 
-    def __init__(self, checkpoint_dir: str):
-        self.checkpoint_dir = checkpoint_dir
-        paths = [
-            os.path.join(checkpoint_dir, f)
-            for f in sorted(os.listdir(checkpoint_dir))
-            if f.startswith('elite_checkpoint_') and f.endswith('.pt')
-        ]
-        assert len(paths) > 0, f'No elite_checkpoint_*.pt files in {checkpoint_dir}'
-        self.paths = paths
+    def __init__(self, archive_path: str):
+        with open(archive_path, "rb") as f:
+            df = pickle.load(f)
+
+        self.solution_cols = [c for c in df.columns if c.startswith("solution_")]
+        self.measures_cols = [c for c in df.columns if c.startswith("measures_")]
+
+        # Store rows as a list for indexed access
+        self.rows = [row for _, row in df.iterrows()]
+        print(f"[EliteCheckpointDataset] Loaded {len(self.rows)} elites from {archive_path}")
 
     def __len__(self):
-        return len(self.paths)
+        return len(self.rows)
 
     def __getitem__(self, idx):
-        return torch.load(self.paths[idx], map_location='cpu')
+        row         = self.rows[idx]
+        metadata    = row["metadata"]
+        flat_weights = row[self.solution_cols].values.astype(np.float32)
+
+        model = Actor(OBS_SHAPE, ACTION_SHAPE, NORMALIZE_OBS, NORMALIZE_RETURNS)
+        model.deserialize(flat_weights)
+
+        # Zero logstd to match ppo.evaluate() — the CMA-ES sampled value was
+        # never used during the evaluation that produced `objective`.
+        model.actor_logstd.data = torch.zeros_like(model.actor_logstd.data)
+
+        # Restore obs normalizer from metadata
+        if NORMALIZE_OBS and metadata is not None:
+            model.obs_normalizer.load_state_dict(metadata["obs_normalizer"])
+
+        state_dict = model.state_dict()
+
+        # Inject obs_normalizer keys if missing (matches conversion script logic)
+        if NORMALIZE_OBS:
+            norm_sd = model.obs_normalizer.state_dict()
+            for k, v in norm_sd.items():
+                full_key = f"obs_normalizer.{k}"
+                if full_key not in state_dict:
+                    state_dict[full_key] = v
+
+        objective   = float(row["objective"])
+        measures    = row[self.measures_cols].values.astype(np.float32)
+        traj_length = float(metadata.get("traj_length", -1)) if metadata is not None else -1
+        obs_normalizer_state = model.obs_normalizer.state_dict() if NORMALIZE_OBS else None
+
+        return {
+            "model_state_dict":     state_dict,
+            "obs_normalizer_state": obs_normalizer_state,
+            "objective":            objective,
+            "measures":             measures,
+            "traj_length":          traj_length,
+            "elite_index":          idx,
+        }
 
 
 def elite_collate_fn(batch):
@@ -53,17 +103,20 @@ def elite_collate_fn(batch):
     }
 
 
-def get_elite_dataloader(checkpoint_dir: str,
+def get_elite_dataloader(archive_path: str,
                          batch_size: int = 32,
                          shuffle: bool = True,
                          num_workers: int = 0) -> DataLoader:
-    """Returns a DataLoader over all elite checkpoints in checkpoint_dir.
+    """Returns a DataLoader over all elites in a pyribs archive pickle.
+
+    Reads the archive directly — no intermediate .pt checkpoint files needed.
 
     Args:
-        checkpoint_dir: directory containing elite_checkpoint_*.pt files
-        batch_size:     number of elites per batch
-        shuffle:        whether to shuffle the order of elites
-        num_workers:    DataLoader worker processes (0 = main process only)
+        archive_path: path to the pickled pyribs archive DataFrame (.pkl)
+        batch_size:   number of elites per batch
+        shuffle:      whether to shuffle the order of elites
+        num_workers:  DataLoader worker processes (0 = main process only,
+                      recommended since __getitem__ constructs an Actor)
 
     Returns:
         DataLoader where each batch is a dict with keys:
@@ -74,14 +127,14 @@ def get_elite_dataloader(checkpoint_dir: str,
             traj_length          — float tensor [batch_size]
             elite_index          — int   tensor [batch_size]
 
-    Example usage:
-        loader = get_elite_dataloader('data/checkpoints', batch_size=8)
+    Example:
+        loader = get_elite_dataloader('data/archive_df.pkl', batch_size=8)
         for batch in loader:
             for sd, obj in zip(batch['model_state_dict'], batch['objective']):
                 model.load_state_dict(sd, strict=False)
                 print(f'elite obj={obj:.2f}')
     """
-    dataset = EliteCheckpointDataset(checkpoint_dir)
+    dataset = EliteCheckpointDataset(archive_path)
     return DataLoader(dataset,
                       batch_size=batch_size,
                       shuffle=shuffle,
