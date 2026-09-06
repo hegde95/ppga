@@ -374,6 +374,7 @@ class PPO:
         if calculate_dqd_gradients:
             solution_params = self._agents[0].serialize()
             original_obs_normalizer = None
+            original_return_normalizer = None
             if self.cfg.normalize_obs:
                 original_obs_normalizer = self._agents[0].obs_normalizer
             if self.cfg.normalize_returns:
@@ -433,7 +434,7 @@ class PPO:
                     # self.truncated[step] = infos['truncation']
                     self.truncated[step] = env_returns[3]
                     self.dones[step] = dones.view(-1)
-                    measures = -infos[ # what is this
+                    measures = -infos[
                         'measures'] if negative_measure_gradients else infos[
                             'measures']
                     self.measures[step] = measures
@@ -618,14 +619,15 @@ class PPO:
 
         if not calculate_dqd_gradients and not move_mean_agent:
             # standard ppo
-            log.debug("Saving checkpoint...")
-            trained_models = self.vec_inference.vec_to_models()
-            for i in range(num_agents):
-                save_checkpoint(
-                    'checkpoints',
-                    f'{self.cfg.env_name}_{self.cfg.env_type}_model_{i}_checkpoint',
-                    trained_models[i], self.vec_optimizer)
-            log.debug("Done!")
+            # log.debug("Saving checkpoint...")
+            # trained_models = self.vec_inference.vec_to_models()
+            # for i in range(num_agents):
+            #     save_checkpoint(
+            #         'checkpoints',
+            #         f'{self.cfg.env_name}_{self.cfg.env_type}_model_{i}_checkpoint',
+            #         trained_models[i], self.vec_optimizer)
+            # log.debug("Done!")
+            pass
         elif calculate_dqd_gradients:
             trained_agents = self.vec_inference.vec_to_models()
             new_params = np.array(
@@ -656,7 +658,7 @@ class PPO:
     def evaluate(self,
                  vec_agent,
                  vec_env,
-                 verbose=True,
+                 verbose=False,
                  obs_normalizer=None,
                  return_normalizer=None):
         '''
@@ -664,7 +666,6 @@ class PPO:
         :param vec_agent: Vectorized agents for vectorized inference
         :returns: Sum rewards and measures for all agents
         '''
-
         total_reward = np.zeros(vec_env.unwrapped.num_envs)
         traj_length = 0
         num_steps = 1000
@@ -740,7 +741,7 @@ class PPO:
         if verbose:
             np.set_printoptions(suppress=True)
             log.debug('Finished Evaluation Step')
-            log.info(f'Reward + Measures: {objective_measures}')
+            # log.info(f'Reward + Measures: {objective_measures}')
             log.info(f'Max Reward on eval: {max_reward}')
             log.info(f'Min Reward on eval: {min_reward}')
             log.info(f'Mean Reward across all agents: {mean_reward}')

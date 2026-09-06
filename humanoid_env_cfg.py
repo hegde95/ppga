@@ -39,6 +39,24 @@ class MySceneCfg(InteractiveSceneCfg):
         physics_material=sim_utils.RigidBodyMaterialCfg(static_friction=1.0, dynamic_friction=1.0, restitution=0.0),
         debug_vis=False,
     )
+    # terrain = TerrainImporterCfg(
+    #     prim_path="/World/ground",
+    #     terrain_type="plane",
+    #     collision_group=-1,
+    #     physics_material=sim_utils.RigidBodyMaterialCfg(
+    #         friction_combine_mode="multiply",
+    #         restitution_combine_mode="multiply",
+    #         static_friction=1.0,
+    #         dynamic_friction=1.0,
+    #     ),
+    #     visual_material=sim_utils.MdlFileCfg(
+    #         mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
+    #         project_uvw=True,
+    #         texture_scale=(0.25, 0.25),
+    #     ),
+    #     debug_vis=False,
+    #     debug_vis=False,
+    # )
 
     # robot
     robot = HUMANOID_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
@@ -58,10 +76,11 @@ class MySceneCfg(InteractiveSceneCfg):
         update_period=0.0,
         history_length=6,
         debug_vis=True,
-        filter_prim_paths_expr=["/World/defaultGroundPlane"]
+        track_air_time=True,
+        # filter_prim_paths_expr=["/World/defaultGroundPlane"]
         # filter_prim_paths_expr=["{ENV_REGEX_NS}/Cube"],
     )
-
+    # contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)
 
 ##
 # MDP settings

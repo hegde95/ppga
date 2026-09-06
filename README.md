@@ -29,6 +29,8 @@ pip install -r requirements.txt
 
 ```
 
+Copy the contents of `humanoid_env_cfg.py` to `IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/classic/humanoid/humanoid_env_cfg.py`
+
 Installing IsaacLab:
 ```bash
 https://isaac-sim.github.io/IsaacLab/v2.1.1/source/setup/installation/pip_installation.html
@@ -164,6 +166,12 @@ For a full list of configurable hyperparameters with descriptions:
 
 ```bash
 python3 -m algorithm.train_ppga --help
+```
+
+To run with Isaac (note that the actor/critic architecture and PPO hyperparameters are changed):
+
+```bash
+sbatch runners/slurm/train_ppga_humanoid_slurm.sh
 ```
 
 ## Evaluating an Archive

@@ -26,11 +26,18 @@ class Actor(StochasticPolicy):
                                   normalize_returns=normalize_returns)
 
         self.actor_mean = nn.Sequential(
-            layer_init(nn.Linear(np.array(obs_shape).prod(), 128)),
-            nn.Tanh(),
-            layer_init(nn.Linear(128, 128)),
-            nn.Tanh(),
-            layer_init(nn.Linear(128, np.prod(action_shape)), std=0.01),
+            # layer_init(nn.Linear(np.array(obs_shape).prod(), 128)),
+            # nn.Tanh(),
+            # layer_init(nn.Linear(128, 128)),
+            # nn.Tanh(),
+            # layer_init(nn.Linear(128, np.prod(action_shape)), std=0.01),
+            layer_init(nn.Linear(np.array(obs_shape).prod(), 400)),
+            nn.ELU(),
+            layer_init(nn.Linear(400, 200)),
+            nn.ELU(),
+            layer_init(nn.Linear(200, 100)),
+            nn.ELU(),
+            layer_init(nn.Linear(100, np.prod(action_shape)), std=0.01),
         )
 
         self.actor_logstd = nn.Parameter(torch.zeros(1, np.prod(action_shape)))
@@ -70,10 +77,15 @@ class PGAMEActor(nn.Module):
 
     def __init__(self, obs_shape, action_shape):
         super().__init__()
-        self.actor_mean = nn.Sequential(nn.Linear(obs_shape, 128), nn.Tanh(),
-                                        nn.Linear(128, 128), nn.Tanh(),
-                                        nn.Linear(128, np.prod(action_shape)),
-                                        nn.Tanh())
+        # self.actor_mean = nn.Sequential(nn.Linear(obs_shape, 128), nn.Tanh(),
+        #                                 nn.Linear(128, 128), nn.Tanh(),
+        #                                 nn.Linear(128, np.prod(action_shape)),
+        #                                 nn.Tanh())
+        self.actor_mean = nn.Sequential(nn.Linear(obs_shape, 400), nn.ELU(),
+                                        nn.Linear(400, 200), nn.ELU(),
+                                        nn.Linear(200, 100), nn.ELU(),
+                                        nn.Linear(100, np.prod(action_shape)),
+                                        nn.ELU())
         self.actor_logstd = -100.0 * torch.ones(action_shape[0])
 
     def forward(self, obs):
@@ -161,13 +173,22 @@ class Critic(CriticBase):
         Standard critic used in PPO. Used to move the mean solution point
         '''
         CriticBase.__init__(self)
+        # self.core = nn.Sequential(
+        #     layer_init(nn.Linear(np.array(obs_shape).prod(), 256)),
+        #     nn.Tanh(),
+        #     layer_init(nn.Linear(256, 256)),
+        #     nn.Tanh(),
+        # )
+        # self.critic = nn.Sequential(layer_init(nn.Linear(256, 1), std=1.0),)
         self.core = nn.Sequential(
-            layer_init(nn.Linear(np.array(obs_shape).prod(), 256)),
-            nn.Tanh(),
-            layer_init(nn.Linear(256, 256)),
-            nn.Tanh(),
+            layer_init(nn.Linear(np.array(obs_shape).prod(), 400)),
+            nn.ELU(),
+            layer_init(nn.Linear(400, 200)),
+            nn.ELU(),
+            layer_init(nn.Linear(200, 100)),
+            nn.ELU(),
         )
-        self.critic = nn.Sequential(layer_init(nn.Linear(256, 1), std=1.0),)
+        self.critic = nn.Sequential(layer_init(nn.Linear(100, 1), std=1.0),)
 
     def get_value(self, obs):
         core_out = self.core(obs)
@@ -193,10 +214,15 @@ class QDCritic(CriticBase):
         self.measure_dim = measure_dim
         if critics_list is None:
             self.all_critics = nn.ModuleList([
+                # nn.Sequential(
+                #     layer_init(nn.Linear(np.array(obs_shape).prod(), 256)),
+                #     nn.Tanh(), layer_init(nn.Linear(256, 256)), nn.Tanh(),
+                #     layer_init(nn.Linear(256, 1), std=1.0))
                 nn.Sequential(
-                    layer_init(nn.Linear(np.array(obs_shape).prod(), 256)),
-                    nn.Tanh(), layer_init(nn.Linear(256, 256)), nn.Tanh(),
-                    layer_init(nn.Linear(256, 1), std=1.0))
+                    layer_init(nn.Linear(np.array(obs_shape).prod(), 400)),
+                    nn.ELU(), layer_init(nn.Linear(400, 200)),
+                    nn.ELU(), layer_init(nn.Linear(200, 100)),
+                    nn.ELU(), layer_init(nn.Linear(100, 1), std=1.0))
                 for _ in range(measure_dim + 1)
             ])
         else:

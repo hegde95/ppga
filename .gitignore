@@ -7,3 +7,6 @@ log.txt
 wandb/
 experiments/
 checkpoints/
+tmp/
+.vscode/
+.Kit/

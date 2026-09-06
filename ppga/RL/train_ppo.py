@@ -171,7 +171,8 @@ if __name__ == '__main__':
         from ppga.envs.brax_custom.brax_env import make_vec_env_brax
         vec_env = make_vec_env_brax(cfg)
     else:
-        raise NotImplementedError(f'{cfg.env_type} is undefined for "env_type"')
+        from ppga.envs.isaac_lab.isaac_env import make_vec_env_isaac
+        vec_env = make_vec_env_isaac(cfg)
 
     cfg.batch_size = int(cfg.env_batch_size * cfg.rollout_length)
     cfg.num_envs = int(cfg.env_batch_size)

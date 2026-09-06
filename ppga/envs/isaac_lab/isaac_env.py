@@ -54,6 +54,9 @@ def _maybe_launch_sim_app(headless: bool = True):
     # Create and launch the Omniverse/Isaac app once.
     # Respect headless mode by default for training.
     args = argparse.Namespace(headless=headless)
+    # args.video = True
+    # args.video_length = 500
+    # args.enable_cameras = True
     app_launcher = AppLauncher(args)
     _simulation_app = app_launcher.app
     return _simulation_app
@@ -119,9 +122,12 @@ class QDRewardIsaac(gym.Wrapper):
         env_returns = self.env.step(action)
         # https://isaac-sim.github.io/IsaacLab/main/source/overview/core-concepts/sensors/contact_sensor.html
         # print(self.env.unwrapped.scene["contact_forces_LF"].data.net_forces_w.shape) # [3000, 2, 3]
-        contact_forces_feet = self.env.unwrapped.scene["contact_forces_feet"].data.net_forces_w
-        contact_forces_norm = torch.norm(contact_forces_feet, dim=-1) # [3000, 2]
-        env_returns[-1]['measures'] = contact_forces_norm
+        # contact_forces_feet = self.env.unwrapped.scene["contact_forces_feet"].data.net_forces_w
+        # contact_forces_norm = torch.norm(contact_forces_feet, dim=-1) # [3000, 2]
+        # env_returns[-1]['measures'] = contact_forces_norm
+        # https://github.com/isaac-sim/IsaacLab/blob/f4aa17f87e2e5db5484f0b5974918573e8918ce2/source/isaaclab/isaaclab/envs/mdp/rewards.py#L267
+        contacts = 1 * (self.env.unwrapped.scene["contact_forces_feet"].data.net_forces_w_history.norm(dim=-1).max(dim=1)[0] > 1.0)
+        env_returns[-1]['measures'] = contacts
 
         # feet_body_forces = env_returns[0]['policy'][:, 53:66] # this is the wrench force, which may not be viable
         # print(torch.norm(feet_body_forces, dim=-1), torch.norm(feet_body_forces, dim=-1).shape)

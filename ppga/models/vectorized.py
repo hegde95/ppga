@@ -197,7 +197,7 @@ class VectorizedActor(VectorizedPolicy):
                                                 repeats,
                                                 dim=0)
         action_logstd = action_logstd.expand_as(action_mean)
-        action_std = torch.exp(action_logstd)
+        action_std = torch.exp(action_logstd) # may want to add nan fixes here, on action_mean and action_std
         probs = torch.distributions.Normal(action_mean, action_std)
         if action is None:
             action = probs.sample()
