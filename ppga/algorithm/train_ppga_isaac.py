@@ -1,4 +1,5 @@
 import argparse
+import copy
 import csv
 import os
 import pickle
@@ -107,6 +108,16 @@ def parse_args():
                         nargs="?",
                         const=True,
                         help="Toggles advantages normalization")
+    parser.add_argument(
+        "--norm_adv_per_minibatch",
+        type=lambda x: bool(strtobool(x)),
+        default=True,
+        help="Normalize advantages per minibatch instead of once per rollout")
+    parser.add_argument(
+        "--mixed_precision",
+        type=lambda x: bool(strtobool(x)),
+        default=True,
+        help="Use autocast in the vectorized actor forward pass")
     parser.add_argument("--clip_coef",
                         type=float,
                         default=0.2,
@@ -141,6 +152,13 @@ def parse_args():
                         default=None,
                         help="the target KL divergence threshold")
     parser.add_argument(
+        "--adaptive_kl",
+        type=lambda x: bool(strtobool(x)),
+        default=False,
+        nargs="?",
+        const=True,
+        help="Adapt optimizer learning rates around target_kl")
+    parser.add_argument(
         '--normalize_obs',
         type=lambda x: bool(strtobool(x)),
         default=False,
@@ -165,8 +183,19 @@ def parse_args():
                         help='Clip obs and rewards b/w -10 and 10')
     parser.add_argument('--action_transform',
                         choices=['none', 'clip', 'tanh'],
-                        default='tanh',
-                        help='Policy action bounding; tanh uses corrected log probabilities')
+                        default=None,
+                        help='Policy action bounding; defaults to tanh for Isaac and none for MJLab')
+    parser.add_argument(
+        '--action_std_parameterization',
+        choices=['log', 'direct'],
+        default='log',
+        help='Learn log standard deviation, or MJLab/RSL-RL-style direct std')
+    parser.add_argument('--initial_action_std', type=float, default=1.0,
+                        help='Initial standard deviation for Gaussian actions')
+    parser.add_argument('--actor_hidden_dims', type=int, nargs=3,
+                        default=(400, 200, 100),
+                        metavar=('H1', 'H2', 'H3'),
+                        help='Actor hidden-layer widths')
     parser.add_argument('--eval_deterministic',
                         type=lambda x: bool(strtobool(x)),
                         default=True,
@@ -178,6 +207,21 @@ def parse_args():
                         help='DQD descriptor reward scale; defaults to env.step_dt')
     parser.add_argument('--episode_length_s', type=float, default=None,
                         help='Override the simulator episode horizon in seconds')
+    parser.add_argument('--mjlab_descriptor_mode',
+                        choices=['height_approach', 'progress'],
+                        default='height_approach',
+                        help='MJLab QD descriptor pair')
+    parser.add_argument('--mjlab_fixed_goal',
+                        type=lambda x: bool(strtobool(x)),
+                        default=False,
+                        help='Use MJLab fixed-goal mode')
+    parser.add_argument('--mjlab_disable_curriculum',
+                        type=lambda x: bool(strtobool(x)),
+                        default=False,
+                        help='Disable MJLab reward curriculum for a stationary objective')
+    parser.add_argument('--mjlab_command_resampling_time', type=float,
+                        default=None,
+                        help='MJLab command period in seconds; must exceed the episode horizon')
 
     # QD Params
     parser.add_argument("--num_emitters",
@@ -227,6 +271,10 @@ def parse_args():
         'Load an existing archive from a checkpoint path. This can be used as an alternative to loading the scheduler if save_scheduler'
         'was disabled and only the archive df checkpoint is available. However, this can affect the performance of the run. Cannot be used together with save_scheduler'
     )
+    parser.add_argument('--initial_actor_checkpoint',
+                        type=str,
+                        default=None,
+                        help='Initialize a new QD run from train_ppo final_model.pt')
     parser.add_argument(
         '--total_iterations',
         type=int,
@@ -247,6 +295,10 @@ def parse_args():
         help=
         'Save the archive heatmaps. Only applies to archives with <= 2 measures'
     )
+    parser.add_argument('--heatmap_freq',
+                        type=int,
+                        default=10,
+                        help='Save a heatmap every N iterations')
     parser.add_argument(
         '--use_surrogate_archive',
         type=lambda x: bool(strtobool(x)),
@@ -338,7 +390,10 @@ def create_scheduler(cfg: Box,
 
     if initial_sol is None:
         initial_agent = Actor(obs_shape, action_shape, cfg.normalize_obs,
-                              cfg.normalize_returns, cfg.action_transform)
+                              cfg.normalize_returns, cfg.action_transform,
+                              cfg.action_std_parameterization,
+                              cfg.initial_action_std,
+                              hidden_dims=cfg.actor_hidden_dims)
         initial_sol = initial_agent.serialize()
     solution_dim = len(initial_sol)
     mode = 'batch'
@@ -382,6 +437,8 @@ def create_scheduler(cfg: Box,
                 solution_dim=solution_dim,
                 dims=archive_dims,
                 ranges=bounds,
+                learning_rate=1.0,
+                threshold_min=threshold_min,
                 seed=cfg.seed,
                 reward_offset=cur_reward_offset,
                 extra_fields={
@@ -407,6 +464,8 @@ def create_scheduler(cfg: Box,
                 solution_dim=solution_dim,
                 dims=archive_dims,
                 ranges=bounds,
+                learning_rate=1.0,
+                threshold_min=threshold_min,
                 seed=cfg.seed,
                 reward_offset=cur_reward_offset,
                 extra_fields={
@@ -486,7 +545,7 @@ def train_ppga(cfg: Box, vec_env):
 
     # (optional) save 2d archive heatmaps
     heatmap_dir = exp_dir.joinpath(Path('heatmaps'))
-    if not heatmap_dir.is_dir():
+    if cfg.save_heatmaps and not heatmap_dir.is_dir():
         heatmap_dir.mkdir()
 
     # path to summary file
@@ -495,8 +554,10 @@ def train_ppga(cfg: Box, vec_env):
         os.remove(summary_filename)
     with open(summary_filename, 'w') as f:
         writer = csv.writer(f)
-        writer.writerow(
-            ['Iteration', 'QD-Score', 'Coverage', 'Maximum', 'Average'])
+        writer.writerow([
+            'Iteration', 'QD-Score', 'Coverage', 'Maximum', 'Average',
+            'Mean Success Rate', 'Max Success Rate', 'Max Object Height'
+        ])
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -507,7 +568,44 @@ def train_ppga(cfg: Box, vec_env):
         scheduler = load_scheduler_from_checkpoint(cfg.load_scheduler_from_cp,
                                                    cfg.seed, device)
     else:
-        scheduler = create_scheduler(cfg, use_result_archive=use_result_archive)
+        initial_sol = None
+        initial_obs_normalizer = None
+        initial_return_normalizer = None
+        if cfg.initial_actor_checkpoint:
+            checkpoint = torch.load(cfg.initial_actor_checkpoint,
+                                    map_location=device,
+                                    weights_only=False)
+            actor_state = checkpoint.get('actor_state_dict', checkpoint)
+            initial_actor = Actor(
+                cfg.obs_shape, cfg.action_shape, cfg.normalize_obs,
+                cfg.normalize_returns, cfg.action_transform,
+                cfg.action_std_parameterization,
+                hidden_dims=cfg.actor_hidden_dims).to(device)
+            actor_state = dict(actor_state)
+            if ('actor_logstd' in actor_state and actor_state['actor_logstd'].shape
+                    != initial_actor.actor_logstd.shape):
+                actor_state['actor_logstd'] = actor_state[
+                    'actor_logstd'].reshape_as(initial_actor.actor_logstd)
+            initial_actor.load_state_dict(actor_state)
+            initial_sol = initial_actor.serialize()
+            if cfg.normalize_obs:
+                initial_obs_normalizer = copy.deepcopy(
+                    initial_actor.obs_normalizer)
+            if cfg.normalize_returns:
+                initial_return_normalizer = copy.deepcopy(
+                    initial_actor.return_normalizer)
+            log.info(
+                f'Initialized QD mean from {cfg.initial_actor_checkpoint}')
+        scheduler = create_scheduler(
+            cfg,
+            use_result_archive=use_result_archive,
+            initial_sol=initial_sol)
+        if initial_obs_normalizer is not None:
+            scheduler.emitters[
+                0].mean_agent_obs_normalizer = initial_obs_normalizer
+        if initial_return_normalizer is not None:
+            scheduler.emitters[
+                0].mean_agent_return_normalizer = initial_return_normalizer
 
     # (optional) take 3d archive snapshots and use to construct a gif
     archive_snapshot_filename = os.path.join(str(logdir),
@@ -530,7 +628,7 @@ def train_ppga(cfg: Box, vec_env):
     ppo = scheduler.emitters[0].ppo
 
     # save the initial heatmap
-    if cfg.num_dims <= 2:
+    if cfg.save_heatmaps and cfg.num_dims <= 2:
         save_heatmap(result_archive,
                      os.path.join(str(heatmap_dir), f'heatmap_{0:05d}.png'))
 
@@ -546,11 +644,18 @@ def train_ppga(cfg: Box, vec_env):
         solution_batch = scheduler.ask_dqd()
         mean_agent = Actor(obs_shape, action_shape, cfg.normalize_obs,
                            cfg.normalize_returns,
-                           cfg.action_transform).deserialize(
+                           cfg.action_transform,
+                           cfg.action_std_parameterization,
+                           hidden_dims=cfg.actor_hidden_dims).deserialize(
                                solution_batch.flatten()).to(device)
         if not cfg.adaptive_stddev:
+            initial_std = (
+                cfg.initial_action_std
+                if cfg.action_std_parameterization == 'direct' else
+                np.log(cfg.initial_action_std))
             mean_agent.actor_logstd = torch.nn.Parameter(
-                torch.zeros(1, np.prod(cfg.action_shape), device=device))
+                torch.full((1, np.prod(cfg.action_shape)), initial_std,
+                           device=device))
 
         if cfg.normalize_obs:
             if scheduler.emitters[0].mean_agent_obs_normalizer is not None:
@@ -578,7 +683,9 @@ def train_ppga(cfg: Box, vec_env):
         branched_agents = [
             Actor(obs_shape, action_shape, cfg.normalize_obs,
                   cfg.normalize_returns,
-                  cfg.action_transform).deserialize(sol).to(device)
+                  cfg.action_transform,
+                  cfg.action_std_parameterization,
+                  hidden_dims=cfg.actor_hidden_dims).deserialize(sol).to(device)
             for sol in branched_sols
         ]
         # Do not overwrite actor_logstd here: it is part of each serialized
@@ -609,7 +716,9 @@ def train_ppga(cfg: Box, vec_env):
             mean_agent = Actor(
                 obs_shape, action_shape, cfg.normalize_obs,
                 cfg.normalize_returns,
-                cfg.action_transform).deserialize(
+                cfg.action_transform,
+                cfg.action_std_parameterization,
+                hidden_dims=cfg.actor_hidden_dims).deserialize(
                     scheduler.emitters[0].theta).to(device)
             if cfg.normalize_obs:
                 mean_agent.obs_normalizer = scheduler.emitters[
@@ -645,7 +754,9 @@ def train_ppga(cfg: Box, vec_env):
             f'{completed_itr=}, {itrs=}, '
             f'Progress: {(100.0 * (completed_itr / itrs)):.2f}%')
 
-        if cfg.num_dims <= 2:
+        if (cfg.save_heatmaps and cfg.num_dims <= 2
+                and (completed_itr % cfg.heatmap_freq == 0
+                     or completed_itr == itrs)):
             save_heatmap(result_archive,
                          os.path.join(str(heatmap_dir), f'heatmap_{completed_itr:05d}.png'),
                          emitter_loc=emitter_loc,
@@ -669,11 +780,29 @@ def train_ppga(cfg: Box, vec_env):
                 shutil.rmtree(oldest_checkpoint)
 
         if completed_itr % log_freq == 0 or final_itr:
+            elite_metadata = []
+            for elite in result_archive:
+                metadata = (elite.get('metadata')
+                            if isinstance(elite, dict)
+                            else getattr(elite, 'metadata', None))
+                if isinstance(metadata, dict):
+                    elite_metadata.append(metadata)
+            success_rates = [
+                data['episode_success_rate'] for data in elite_metadata
+                if 'episode_success_rate' in data
+            ]
+            object_heights = [
+                data['max_object_height'] for data in elite_metadata
+                if 'max_object_height' in data
+            ]
             with open(summary_filename, 'a') as summary_file:
                 csv.writer(summary_file).writerow([
                     completed_itr, result_archive.stats.qd_score,
                     result_archive.stats.coverage, result_archive.stats.obj_max,
-                    result_archive.stats.obj_mean
+                    result_archive.stats.obj_mean,
+                    np.mean(success_rates) if success_rates else np.nan,
+                    np.max(success_rates) if success_rates else np.nan,
+                    np.max(object_heights) if object_heights else np.nan,
                 ])
 
         if (completed_itr % log_freq == 0 or final_itr) and cfg.take_archive_snapshots:
@@ -700,6 +829,14 @@ def train_ppga(cfg: Box, vec_env):
             }
             for i in range(1, cfg.num_dims + 1):
                 qd_metrics[f'QD/mean_coeff_measure{i}'] = mean_grad_coeffs[0][i]
+            if success_rates:
+                qd_metrics['Task/archive_mean_success_rate'] = np.mean(
+                    success_rates)
+                qd_metrics['Task/archive_max_success_rate'] = np.max(
+                    success_rates)
+            if object_heights:
+                qd_metrics['Task/archive_max_object_height'] = np.max(
+                    object_heights)
             wandb.log(qd_metrics)
 
 
@@ -707,8 +844,16 @@ def main():
     cfg = parse_args()
     if cfg.total_iterations < 1:
         raise ValueError('total_iterations must be at least 1')
+    if cfg.save_heatmaps and cfg.heatmap_freq < 1:
+        raise ValueError('heatmap_freq must be at least 1 when saving heatmaps')
+    if cfg.adaptive_kl and cfg.target_kl is None:
+        raise ValueError('adaptive_kl requires target_kl')
+    if cfg.initial_action_std <= 0:
+        raise ValueError('initial_action_std must be positive')
     cfg.num_emitters = 1
     vec_env = make_vec_env(cfg)
+    if cfg.action_transform is None:
+        cfg.action_transform = 'tanh' if cfg.env_type == 'isaac' else 'none'
     if cfg.value_bootstrap is None:
         cfg.value_bootstrap = True
     cfg.batch_size = int(cfg.env_batch_size * cfg.rollout_length)
