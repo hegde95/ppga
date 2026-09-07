@@ -57,7 +57,10 @@ def main():
     # while simulation_app.is_running():
     for i in range(50):
         # https://github.com/isaac-sim/IsaacLab/blob/f4aa17f87e2e5db5484f0b5974918573e8918ce2/source/isaaclab/isaaclab/envs/mdp/rewards.py#L267
-        contacts = 1 * (env.unwrapped.scene["contact_forces_feet"].data.net_forces_w_history.norm(dim=-1).max(dim=1)[0] > 1.0)
+        contacts = torch.cat([
+            (env.unwrapped.scene[name].data.net_forces_w_history.norm(dim=-1).max(dim=1)[0] > 1.0)
+            for name in ("contact_forces_left_foot", "contact_forces_right_foot")
+        ], dim=1).to(torch.float32)
         print(i, contacts)
         # print(i, torch.norm(env.unwrapped.scene["contact_forces_feet"].data.net_forces_w, dim=-1)[0])
         # run everything in inference mode

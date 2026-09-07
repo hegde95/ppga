@@ -4,8 +4,6 @@ import time
 from collections import deque
 from typing import List, Optional
 
-import brax.envs
-import gym
 import numpy as np
 import torch
 import torch.nn as nn
@@ -14,6 +12,8 @@ from torch import Tensor
 
 from ppga.models.actor_critic import Actor, Critic, QDCritic
 from ppga.models.vectorized import VectorizedActor
+from ppga.envs.qd_env import (FINAL_OBSERVATION, FINAL_OBSERVATION_MASK,
+                              policy_observation)
 from ppga.utils.utilities import log, save_checkpoint
 
 # based off of the clean-rl implementation
@@ -42,6 +42,27 @@ def calculate_discounted_sum_torch(x: Tensor,
     return discounted_sum
 
 
+def add_time_limit_bootstrap(rewards: Tensor, truncated: Tensor,
+                             terminal_values: Tensor,
+                             terminal_observation_mask: Tensor,
+                             gamma: float) -> Tensor:
+    """Bootstrap artificial time limits from the true terminal observation.
+
+    ``dones`` still cuts the GAE recursion because the following observation is
+    from a new episode. Only the one-step reward receives ``gamma * V(s_T)``.
+    """
+    truncated = truncated.to(device=rewards.device, dtype=torch.bool)
+    valid = terminal_observation_mask.to(device=rewards.device,
+                                         dtype=torch.bool)
+    missing = truncated & ~valid
+    if missing.any():
+        count = int(missing.sum().item())
+        raise RuntimeError(
+            f"Cannot bootstrap {count} truncated transitions: the backend did "
+            "not provide their pre-reset final observations")
+    return rewards + float(gamma) * truncated.to(rewards.dtype) * terminal_values
+
+
 class PPO:
 
     def __init__(self, cfg):
@@ -52,11 +73,13 @@ class PPO:
         self.num_envs = cfg.num_envs
         self.obs_shape = cfg.obs_shape
         self.action_shape = cfg.action_shape
+        self.action_transform = getattr(cfg, 'action_transform', 'none')
 
         agent = Actor(self.obs_shape,
                       self.action_shape,
                       normalize_obs=cfg.normalize_obs,
-                      normalize_returns=cfg.normalize_returns).to(self.device)
+                      normalize_returns=cfg.normalize_returns,
+                      action_transform=self.action_transform).to(self.device)
         self._agents = [agent]
         critic = QDCritic(self.obs_shape,
                           measure_dim=cfg.num_dims).to(self.device)
@@ -115,8 +138,15 @@ class PPO:
             (cfg.rollout_length, self.num_envs)).to(self.device)
         self.measures = torch.zeros((cfg.rollout_length, self.num_envs,
                                      self.cfg.num_dims)).to(self.device)
+        self.final_observations = torch.zeros(
+            (cfg.rollout_length, self.num_envs) + self.obs_shape,
+            device=self.device)
+        self.final_observation_mask = torch.zeros(
+            (cfg.rollout_length, self.num_envs), dtype=torch.bool,
+            device=self.device)
 
         self.next_obs = None
+        self._rollout_state_valid = False
         # for moving the mean solution point w/ ppo
         self._grad_coeffs = torch.zeros(cfg.num_dims + 1).to(self.device)
         self._grad_coeffs[
@@ -124,6 +154,11 @@ class PPO:
         self.obs_measure_coeffs = torch.zeros(
             (cfg.rollout_length, self.num_envs,
              self.obs_shape[0] + self.cfg.num_dims + 1)).to(self.device)
+
+    @staticmethod
+    def _policy_obs(observation):
+        """Return the actor observation for both Isaac Dict and flat envs."""
+        return policy_observation(observation)
 
     @property
     def agents(self):
@@ -139,6 +174,10 @@ class PPO:
         self.vec_optimizer = torch.optim.Adam(self.vec_inference.parameters(),
                                               lr=self.cfg.learning_rate,
                                               eps=1e-5)
+        # A different policy grouping invalidates both the environment-policy
+        # assignment and any observation normalization applied to next_obs.
+        self.next_obs = None
+        self._rollout_state_valid = False
 
     @property
     def grad_coeffs(self):
@@ -191,7 +230,9 @@ class PPO:
                           rollout_length,
                           calculate_dqd_gradients=False,
                           move_mean_agent=False):
-        # bootstrap value if not done
+        del next_done, rollout_length
+        # Bootstrap the rollout tail, and separately bootstrap artificial time
+        # limits from the pre-reset terminal observations captured per step.
         with torch.no_grad():
             if calculate_dqd_gradients:
                 next_obs = next_obs.reshape(
@@ -211,6 +252,21 @@ class PPO:
                     next_value.append(val)
                 next_value = torch.cat(next_value).reshape(1,
                                                            -1).to(self.device)
+
+                if self.cfg.normalize_returns:
+                    denormalized_values = torch.empty_like(values)
+                    envs_per_dim = self.cfg.num_envs // (self.cfg.num_dims + 1)
+                    for i in range(self.cfg.num_dims + 1):
+                        env_slice = slice(i * envs_per_dim,
+                                          (i + 1) * envs_per_dim)
+                        mean = self.vec_inference.rew_normalizers[
+                            i].return_rms.mean.to(self.device)
+                        var = self.vec_inference.rew_normalizers[
+                            i].return_rms.var.to(self.device)
+                        denormalized_values[:, env_slice] = (
+                            torch.clamp(values[:, env_slice], -5.0, 5.0) *
+                            torch.sqrt(var) + mean)
+                    values = denormalized_values
 
             else:
                 if move_mean_agent:
@@ -232,7 +288,56 @@ class PPO:
                               torch.sqrt(var)) + mean
 
             if self.cfg.value_bootstrap:
-                rewards = rewards + self.cfg.gamma * dones * self.truncated * values
+                terminal_obs = self.final_observations
+                if self.cfg.normalize_obs:
+                    terminal_obs = terminal_obs.clone()
+                    envs_per_model = self.num_envs // self.vec_inference.num_models
+                    for i, normalizer in enumerate(
+                            self.vec_inference.obs_normalizers):
+                        env_slice = slice(i * envs_per_model,
+                                          (i + 1) * envs_per_model)
+                        obs = terminal_obs[:, env_slice].reshape(
+                            -1, self.obs_shape[0])
+                        terminal_obs[:, env_slice] = normalizer(
+                            obs, update=False).reshape(
+                                terminal_obs.shape[0], envs_per_model, -1)
+
+                terminal_values = torch.zeros_like(rewards)
+                if calculate_dqd_gradients:
+                    envs_per_dim = self.num_envs // (self.cfg.num_dims + 1)
+                    for i in range(self.cfg.num_dims + 1):
+                        env_slice = slice(i * envs_per_dim,
+                                          (i + 1) * envs_per_dim)
+                        obs = terminal_obs[:, env_slice].reshape(
+                            -1, self.obs_shape[0])
+                        val = self.qd_critic.get_value_at(obs, dim=i).reshape(
+                            terminal_obs.shape[0], envs_per_dim)
+                        if self.cfg.normalize_returns:
+                            mean = self.vec_inference.rew_normalizers[
+                                i].return_rms.mean.to(self.device)
+                            var = self.vec_inference.rew_normalizers[
+                                i].return_rms.var.to(self.device)
+                            val = torch.clamp(val, -5.0, 5.0) * torch.sqrt(
+                                var) + mean
+                        terminal_values[:, env_slice] = val
+                else:
+                    flat_terminal_obs = terminal_obs.reshape(
+                        -1, self.obs_shape[0])
+                    critic = self.mean_critic if move_mean_agent else self.qd_critic
+                    terminal_values = critic.get_value(
+                        flat_terminal_obs).reshape_as(rewards)
+                    if self.cfg.normalize_returns:
+                        mean = self.vec_inference.rew_normalizers[
+                            0].return_rms.mean.to(self.device)
+                        var = self.vec_inference.rew_normalizers[
+                            0].return_rms.var.to(self.device)
+                        terminal_values = (
+                            torch.clamp(terminal_values, -5.0, 5.0) *
+                            torch.sqrt(var) + mean)
+
+                rewards = add_time_limit_bootstrap(
+                    rewards, self.truncated, terminal_values,
+                    self.final_observation_mask, self.cfg.gamma)
 
             values = torch.cat([values, next_value])
 
@@ -260,6 +365,8 @@ class PPO:
 
             b_inds = torch.arange(batch_size)
             clipfracs = []
+            actor_grad_norms = []
+            critic_grad_norms = []
 
             pg_loss = v_loss = entropy_loss = ratio = None
 
@@ -339,17 +446,20 @@ class PPO:
                     p.grad = None
 
                 loss.backward()
-                nn.utils.clip_grad_norm_(self.vec_inference.parameters(),
-                                         self.cfg.max_grad_norm)
+                actor_grad_norms.append(
+                    nn.utils.clip_grad_norm_(self.vec_inference.parameters(),
+                                             self.cfg.max_grad_norm).detach())
                 self.vec_optimizer.step()
                 if move_mean_agent:
-                    nn.utils.clip_grad_norm_(self.mean_critic.parameters(),
-                                             self.cfg.max_grad_norm)
+                    critic_grad_norms.append(
+                        nn.utils.clip_grad_norm_(self.mean_critic.parameters(),
+                                                 self.cfg.max_grad_norm).detach())
                     self.mean_critic_optim.step()
                 else:
                     # works for standard ppo or the dqd step
-                    nn.utils.clip_grad_norm_(self.qd_critic.parameters(),
-                                             self.cfg.max_grad_norm)
+                    critic_grad_norms.append(
+                        nn.utils.clip_grad_norm_(self.qd_critic.parameters(),
+                                                 self.cfg.max_grad_norm).detach())
                     self.qd_critic_optim.step()
 
             if self.cfg.target_kl is not None:
@@ -357,7 +467,10 @@ class PPO:
                     # print(f"Early stopping at epoch {epoch} due to reaching max kl {approx_kl}")
                     break
 
-        return pg_loss, v_loss, entropy_loss, old_approx_kl, approx_kl, clipfracs, ratio
+        actor_grad_norm = torch.stack(actor_grad_norms).mean()
+        critic_grad_norm = torch.stack(critic_grad_norms).mean()
+        return (pg_loss, v_loss, entropy_loss, old_approx_kl, approx_kl,
+                clipfracs, ratio, actor_grad_norm, critic_grad_norm)
 
     def train(self,
               vec_env,
@@ -365,11 +478,9 @@ class PPO:
               rollout_length,
               calculate_dqd_gradients=False,
               move_mean_agent=False,
-              negative_measure_gradients=False):
+              negative_measure_gradients=False,
+              reset_env=True):
         global_step = 0
-        self.next_obs = vec_env.reset()[0]['policy']
-        if self.cfg.normalize_obs:
-            self.next_obs = self.vec_inference.vec_normalize_obs(self.next_obs)
 
         if calculate_dqd_gradients:
             solution_params = self._agents[0].serialize()
@@ -386,15 +497,54 @@ class PPO:
             ]
             agents = [
                 Actor(self.obs_shape, self.action_shape, self.cfg.normalize_obs,
-                      self.cfg.normalize_returns).deserialize(params)
+                      self.cfg.normalize_returns,
+                      self.action_transform).deserialize(params)
                 for params in agent_original_params
             ]
+            for agent in agents:
+                if self.cfg.normalize_obs:
+                    agent.obs_normalizer = copy.deepcopy(
+                        original_obs_normalizer)
+                if self.cfg.normalize_returns:
+                    agent.return_normalizer = copy.deepcopy(
+                        original_return_normalizer)
             self.agents = agents
 
         num_agents = len(self._agents)
+        if self.num_envs % num_agents != 0:
+            raise ValueError(
+                f"num_envs={self.num_envs} must be divisible by "
+                f"num_agents={num_agents}")
+
+        # Resets remain the default at DQD phase boundaries, where the policy
+        # assignment changes. Callers may continue a rollout only when the
+        # exact same policy grouping remains installed.
+        if reset_env or not self._rollout_state_valid or self.next_obs is None:
+            self.next_obs = self._policy_obs(vec_env.reset()[0]).to(self.device)
+            if self.cfg.normalize_obs:
+                self.next_obs = self.vec_inference.vec_normalize_obs(
+                    self.next_obs)
+            self.total_rewards.zero_()
+            self.ep_len.zero_()
+        self._rollout_state_valid = True
 
         train_start = time.time()
         for update in range(1, num_updates + 1):
+            if self.cfg.anneal_lr:
+                frac = 1.0 - (update - 1.0) / max(num_updates, 1)
+                learning_rate = frac * self.cfg.learning_rate
+                for optimizer in (self.vec_optimizer, self.qd_critic_optim,
+                                  self.mean_critic_optim):
+                    optimizer.param_groups[0]['lr'] = learning_rate
+
+            raw_out_of_bounds = 0
+            saturated_actions = 0
+            action_elements = 0
+            raw_measure_sum = torch.zeros(self.cfg.num_dims, device=self.device)
+            measure_reward_sum = torch.zeros(self.cfg.num_dims, device=self.device)
+            measure_samples = 0
+            reward_term_sums = {}
+            termination_counts = {}
             with torch.no_grad():
                 for step in range(rollout_length):
                     global_step += self.num_envs
@@ -405,6 +555,10 @@ class PPO:
                         self.next_obs)
                     # b/c of torch amp, need to convert back to float32
                     action = action.to(torch.float32)
+                    raw_action = self.vec_inference.last_raw_action
+                    raw_out_of_bounds += (raw_action.abs() > 1.0).sum().item()
+                    saturated_actions += (action.abs() > 0.99).sum().item()
+                    action_elements += action.numel()
                     if calculate_dqd_gradients:
                         next_obs = self.next_obs.reshape(
                             num_agents, self.cfg.num_envs // num_agents, -1)
@@ -423,7 +577,7 @@ class PPO:
                     self.logprobs[step] = logprob
 
                     env_returns = vec_env.step(action)
-                    self.next_obs = env_returns[0]['policy']
+                    self.next_obs = self._policy_obs(env_returns[0])
                     reward = env_returns[1]
                     dones = env_returns[2] | env_returns[3] # terminated and truncated
                     infos = env_returns[4]
@@ -434,13 +588,36 @@ class PPO:
                     # self.truncated[step] = infos['truncation']
                     self.truncated[step] = env_returns[3]
                     self.dones[step] = dones.view(-1)
-                    measures = -infos[
-                        'measures'] if negative_measure_gradients else infos[
-                            'measures']
-                    self.measures[step] = measures
+                    self.final_observations[step].zero_()
+                    self.final_observation_mask[step].zero_()
+                    if FINAL_OBSERVATION in infos:
+                        final_obs = self._policy_obs(
+                            infos[FINAL_OBSERVATION]).to(self.device)
+                        if final_obs.shape != self.final_observations[step].shape:
+                            raise ValueError(
+                                "Backend final observation has shape "
+                                f"{tuple(final_obs.shape)}; expected "
+                                f"{tuple(self.final_observations[step].shape)}")
+                        self.final_observations[step].copy_(final_obs)
+                        final_mask = infos.get(FINAL_OBSERVATION_MASK, dones)
+                        self.final_observation_mask[step].copy_(
+                            final_mask.to(self.device).bool().reshape(-1))
+                    raw_measures = infos['measures'].to(self.device)
+                    measure_rewards = infos.get('measure_rewards', raw_measures).to(self.device)
+                    if negative_measure_gradients:
+                        measure_rewards = -measure_rewards
+                    self.measures[step] = measure_rewards
+                    raw_measure_sum += raw_measures.sum(dim=0)
+                    measure_reward_sum += measure_rewards.sum(dim=0)
+                    measure_samples += raw_measures.shape[0]
+                    for name, values in infos.get('reward_terms', {}).items():
+                        reward_term_sums[name] = reward_term_sums.get(name, 0.0) + values.mean().item()
+                    for name, values in infos.get('termination_terms', {}).items():
+                        values = values.to(dones.device).bool() & dones.bool()
+                        termination_counts[name] = termination_counts.get(name, 0) + values.sum().item()
                     if move_mean_agent:
                         rew_measures = torch.cat(
-                            (reward.unsqueeze(1), measures), dim=1)
+                            (reward.unsqueeze(1), measure_rewards), dim=1)
                         rew_measures *= self._grad_coeffs
                         reward = rew_measures.sum(dim=1)
                     reward = reward.cpu()
@@ -460,8 +637,8 @@ class PPO:
                                 self.total_rewards[dones_cpu].tolist())
                             self.episodic_lengths.extend(
                                 self.ep_len[dones_cpu].tolist())
-                            self.total_rewards[dones_bool] = 0
-                            self.ep_len[dones_bool] = 0
+                            self.total_rewards[dones_cpu] = 0
+                            self.ep_len[dones_cpu] = 0
                         self.num_intervals += 1
 
                 if calculate_dqd_gradients:
@@ -518,7 +695,7 @@ class PPO:
             # end of nograd ctx
             # update the network
             (pg_loss, v_loss, entropy_loss, old_approx_kl, approx_kl, clipfracs,
-             ratio) = self.batch_update(
+             ratio, actor_grad_norm, critic_grad_norm) = self.batch_update(
                  b_values,
                  (b_obs, b_logprobs, b_actions, b_advantages, b_returns),
                  calculate_dqd_gradients=calculate_dqd_gradients,
@@ -533,17 +710,23 @@ class PPO:
                 avg_log_stddev = self.vec_inference.actor_logstd.mean().detach(
                 ).cpu().numpy()
                 avg_obj_magnitude = self.rewards.mean()
+                branch_adv_std = advantages.transpose(0, 1).reshape(
+                    num_agents, -1).std(dim=1)
+                branch_value_mse = (b_values - b_returns).square().mean(dim=1)
 
                 train_elapse = time.time() - train_start
                 fps = global_step / train_elapse
                 if not calculate_dqd_gradients and not move_mean_agent:  # backwards compatibility for standard PPO
-                    if update % 10 == 0:
+                    if update % self._report_interval == 0:
                         log.debug(
-                            f'Avg FPS so far: {fps:.2f}, env steps: {global_step}, train time: {train_elapse:.2f}, avg reward: {np.mean(self.episodic_returns)}'
+                            f'FPS={fps:.2f}, steps={global_step}, '
+                            f'episodic_reward={np.mean(self.episodic_returns):.3f}, '
+                            f'raw_action_oob={raw_out_of_bounds / max(action_elements, 1):.3f}, '
+                            f'action_saturation={saturated_actions / max(action_elements, 1):.3f}'
                         )
 
                 if self.cfg.use_wandb:
-                    wandb.log({
+                    diagnostics = {
                         "charts/actor_avg_logstd": avg_log_stddev,
                         "charts/average_rew_magnitude": avg_obj_magnitude,
                         f"losses/{move_mean_agent=}/value_loss": v_loss.item(),
@@ -565,12 +748,30 @@ class PPO:
                         "train/act_max": action.max().item(),
                         "train/ratio_min": ratio.min().item(),
                         "train/ratio_max": ratio.max().item(),
+                        "train/raw_action_oob_fraction": raw_out_of_bounds / max(action_elements, 1),
+                        "train/action_saturation_fraction": saturated_actions / max(action_elements, 1),
+                        "train/actor_grad_norm": actor_grad_norm.item(),
+                        "train/critic_grad_norm": critic_grad_norm.item(),
                         "Env step": global_step,
                         "global_step": global_step,
                         "Update": update,
                         "FPS": fps,
                         "perf/_fps": fps,
-                    })
+                    }
+                    if measure_samples:
+                        for i in range(self.cfg.num_dims):
+                            diagnostics[f"train/measure_{i}_occupancy"] = (
+                                raw_measure_sum[i] / measure_samples).item()
+                            diagnostics[f"train/measure_{i}_reward_mean"] = (
+                                measure_reward_sum[i] / measure_samples).item()
+                    for i in range(num_agents):
+                        diagnostics[f"train/branch_{i}_adv_std"] = branch_adv_std[i].item()
+                        diagnostics[f"train/branch_{i}_value_mse"] = branch_value_mse[i].item()
+                    for name, value in reward_term_sums.items():
+                        diagnostics[f"reward_terms/{name}"] = value / rollout_length
+                    for name, value in termination_counts.items():
+                        diagnostics[f"terminations/{name}"] = value
+                    wandb.log(diagnostics)
 
                     if len(self.episodic_returns):
                         # only log if we have something to report
@@ -637,7 +838,8 @@ class PPO:
 
             original_agent = [
                 Actor(self.obs_shape, self.action_shape, self.cfg.normalize_obs,
-                      self.cfg.normalize_returns).deserialize(
+                      self.cfg.normalize_returns,
+                      self.action_transform).deserialize(
                           agent_original_params[0]).to(self.device)
             ]
             self.vec_inference = VectorizedActor(original_agent, Actor,
@@ -660,36 +862,48 @@ class PPO:
                  vec_env,
                  verbose=False,
                  obs_normalizer=None,
-                 return_normalizer=None):
+                 return_normalizer=None,
+                 deterministic=None):
         '''
         Evaluate all agents for one episode
         :param vec_agent: Vectorized agents for vectorized inference
         :returns: Sum rewards and measures for all agents
         '''
-        total_reward = np.zeros(vec_env.unwrapped.num_envs)
+        if deterministic is None:
+            deterministic = getattr(self.cfg, 'eval_deterministic', True)
+        # Evaluation resets and advances vec_env using a potentially different
+        # policy assignment, so a later training call must start a fresh phase.
+        self._rollout_state_valid = False
+        num_envs = vec_env.unwrapped.num_envs
+        if num_envs % vec_agent.num_models != 0:
+            raise ValueError(
+                'Evaluation env count must be divisible by the number of policies')
+        total_reward = np.zeros(num_envs)
         traj_length = 0
-        num_steps = 1000
+        num_steps = int(getattr(self.cfg, 'eval_max_steps', 0) or
+                        getattr(vec_env.unwrapped, 'max_episode_length', 1000))
 
-        obs = vec_env.reset()[0]['policy']
+        obs = self._policy_obs(vec_env.reset()[0])
         obs = obs.to(self.device)
-        dones = torch.BoolTensor([False for _ in range(vec_env.unwrapped.num_envs)])
-        all_dones = torch.zeros((num_steps, vec_env.unwrapped.num_envs)).to(self.device)
+        dones = torch.zeros(num_envs, dtype=torch.bool)
+        all_dones = torch.zeros((num_steps, num_envs), dtype=torch.bool)
         measures_acc = torch.zeros(
-            (num_steps, vec_env.unwrapped.num_envs, self.cfg.num_dims)).to(self.device)
+            (num_steps, num_envs, self.cfg.num_dims), device=self.device)
         measures = torch.zeros(
-            (vec_env.unwrapped.num_envs, self.cfg.num_dims)).to(self.device)
+            (num_envs, self.cfg.num_dims), device=self.device)
 
         if self.cfg.normalize_obs and obs_normalizer is not None:
             mean, var = obs_normalizer.obs_rms.mean, obs_normalizer.obs_rms.var
 
-        while not torch.all(dones):
+        while not torch.all(dones) and traj_length < num_steps:
             with torch.no_grad():
                 if self.cfg.normalize_obs:
                     obs = (obs - mean) / (torch.sqrt(var) + 1e-8)
-                acts, _, _ = vec_agent.get_action(obs)
+                acts, _, _ = vec_agent.get_action(
+                    obs, deterministic=deterministic)
                 acts = acts.to(torch.float32)
                 env_returns = vec_env.step(acts)
-                obs = env_returns[0]['policy']
+                obs = self._policy_obs(env_returns[0])
                 rew = env_returns[1]
                 next_dones = env_returns[2] | env_returns[3] # terminated and truncated
                 infos = env_returns[4]
@@ -699,23 +913,30 @@ class PPO:
                 total_reward += rew.detach().cpu().numpy(
                 ) * ~dones.cpu().numpy()
                 dones = torch.logical_or(dones, next_dones.cpu())
-                all_dones[traj_length] = dones.long().clone()
+                all_dones[traj_length] = dones.clone()
                 traj_length += 1
 
+        if not torch.all(dones):
+            unfinished = (~dones).sum().item()
+            raise RuntimeError(
+                f"Evaluation hit {num_steps} steps with {unfinished} unfinished environments. "
+                "Increase --eval_max_steps or verify task termination settings.")
+
         # the first done in each env is where that trajectory ends
-        traj_lengths = torch.argmax(all_dones, dim=0) + 1
+        # CPU argmax is not implemented for bool tensors in PyTorch 2.7.
+        traj_lengths = torch.argmax(all_dones.to(torch.int64), dim=0) + 1
         # TODO: figure out how to vectorize this
-        for i in range(vec_env.unwrapped.num_envs):
+        for i in range(num_envs):
             measures[i] = measures_acc[:traj_lengths[i],
                                        i].sum(dim=0) / traj_lengths[i]
         measures = measures.reshape(vec_agent.num_models,
-                                    vec_env.unwrapped.num_envs // vec_agent.num_models,
+                                    num_envs // vec_agent.num_models,
                                     -1).mean(dim=1).detach().cpu().numpy()
 
         total_reward = total_reward.reshape(
             (vec_agent.num_models,
-             vec_env.unwrapped.num_envs // vec_agent.num_models)).mean(axis=1)
-        avg_traj_lengths = traj_lengths.to(torch.float32).reshape((vec_agent.num_models, vec_env.unwrapped.num_envs // vec_agent.num_models)).\
+             num_envs // vec_agent.num_models)).mean(axis=1)
+        avg_traj_lengths = traj_lengths.to(torch.float32).reshape((vec_agent.num_models, num_envs // vec_agent.num_models)).\
             mean(dim=1).cpu().numpy()
         metadata = np.array([{
             'traj_length': t
@@ -741,6 +962,7 @@ class PPO:
         if verbose:
             np.set_printoptions(suppress=True)
             log.debug('Finished Evaluation Step')
+            log.info(f"Evaluation policy: {'deterministic' if deterministic else 'stochastic'}")
             # log.info(f'Reward + Measures: {objective_measures}')
             log.info(f'Max Reward on eval: {max_reward}')
             log.info(f'Min Reward on eval: {min_reward}')

@@ -69,6 +69,11 @@ class VectorizedPolicy(StochasticPolicy, ABC):
         self.normalize_returns = normalize_returns
         self.obs_shape = obs_shape
         self.action_shape = action_shape
+        self.action_transform = getattr(models[0], 'action_transform', 'none')
+        if any(getattr(model, 'action_transform', 'none') != self.action_transform
+               for model in models):
+            raise ValueError('All vectorized actors must use the same action transform')
+        self.last_raw_action = None
 
         if normalize_obs:
             self.obs_normalizers = [model.obs_normalizer for model in models]
@@ -119,6 +124,8 @@ class VectorizedPolicy(StochasticPolicy, ABC):
             for _ in range(self.num_models)
         ]
         for i, model in enumerate(models):
+            if hasattr(model, 'action_transform'):
+                model.action_transform = self.action_transform
             for l, layer in enumerate(self.actor_mean):
                 # layer could be a nonlinearity
                 if not isinstance(layer, VectorizedLinearBlock):
@@ -141,15 +148,15 @@ class VectorizedPolicy(StochasticPolicy, ABC):
         pass
 
     @abstractmethod
-    def get_action(self, obs, action=None):
+    def get_action(self, obs, action=None, deterministic=False):
         pass
 
-    def vec_normalize_obs(self, obs):
+    def vec_normalize_obs(self, obs, update=True):
         # TODO: make this properly vectorized
         obs = obs.reshape(self.num_models, obs.shape[0] // self.num_models, -1)
         for i, (model_obs,
                 normalizer) in enumerate(zip(obs, self.obs_normalizers)):
-            obs[i] = normalizer(model_obs)
+            obs[i] = normalizer(model_obs, update=update)
         return obs.reshape(-1, obs.shape[-1])
 
     def vec_normalize_returns(self, rewards):
@@ -189,16 +196,39 @@ class VectorizedActor(VectorizedPolicy):
     def forward(self, x):
         return self.actor_mean(x)
 
-    def get_action(self, obs, action=None):
+    def get_action(self, obs, action=None, deterministic=False):
         with autocast(device_type=self.device.type):
             action_mean = self.actor_mean(obs)
+        # Keep the probability calculation in float32. In particular, the
+        # inverse tanh used by PPO to recompute stored action likelihoods is
+        # too sensitive near +/-1 for float16 arithmetic.
+        action_mean = action_mean.float()
         repeats = obs.shape[0] // self.num_models
         action_logstd = torch.repeat_interleave(self.actor_logstd,
                                                 repeats,
-                                                dim=0)
+                                                dim=0).float()
         action_logstd = action_logstd.expand_as(action_mean)
         action_std = torch.exp(action_logstd) # may want to add nan fixes here, on action_mean and action_std
         probs = torch.distributions.Normal(action_mean, action_std)
         if action is None:
-            action = probs.sample()
-        return action, probs.log_prob(action).sum(1), probs.entropy()
+            raw_action = action_mean if deterministic else probs.sample()
+            if self.action_transform == 'tanh':
+                action = torch.tanh(raw_action)
+            elif self.action_transform == 'clip':
+                action = raw_action.clamp(-1.0, 1.0)
+            else:
+                action = raw_action
+        elif self.action_transform == 'tanh':
+            eps = torch.finfo(action.dtype).eps
+            raw_action = torch.atanh(action.clamp(-1.0 + eps, 1.0 - eps))
+        else:
+            raw_action = action
+
+        self.last_raw_action = raw_action
+        likelihood_action = action if self.action_transform == 'clip' else raw_action
+        logprob = probs.log_prob(likelihood_action)
+        if self.action_transform == 'tanh':
+            logprob -= torch.log(1.0 - action.square() + 1e-6)
+        logprob = logprob.sum(1)
+        entropy = -logprob if self.action_transform == 'tanh' else probs.entropy().sum(1)
+        return action, logprob, entropy

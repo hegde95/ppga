@@ -1,6 +1,9 @@
 from abc import ABC, abstractmethod
 
-import gym
+try:
+    import gymnasium as gym
+except ImportError:  # Backward compatibility with the original Brax environment.
+    import gym
 import numpy as np
 import torch
 import torch.nn as nn
@@ -30,7 +33,7 @@ class StochasticPolicy(ABC, nn.Module):
         pass
 
     @abstractmethod
-    def get_action(self, obs, action=None):
+    def get_action(self, obs, action=None, deterministic=False):
         ...
 
     @staticmethod

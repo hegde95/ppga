@@ -71,14 +71,24 @@ class MySceneCfg(InteractiveSceneCfg):
 
     # https://isaac-sim.github.io/IsaacLab/main/source/overview/core-concepts/sensors/contact_sensor.html
     # sensors
-    contact_forces_feet = ContactSensorCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/.*_foot",
+    # Keep one body per sensor. On Isaac Sim 5.1 the PhysX tensor view can
+    # under-count bodies when ContactSensor combines multiple humanoid links
+    # into an alternation such as ``(left_foot|right_foot)``.
+    contact_forces_left_foot = ContactSensorCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/left_foot",
         update_period=0.0,
         history_length=6,
-        debug_vis=True,
+        debug_vis=False,
         track_air_time=True,
         # filter_prim_paths_expr=["/World/defaultGroundPlane"]
         # filter_prim_paths_expr=["{ENV_REGEX_NS}/Cube"],
+    )
+    contact_forces_right_foot = ContactSensorCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/right_foot",
+        update_period=0.0,
+        history_length=6,
+        debug_vis=False,
+        track_air_time=True,
     )
     # contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)
 
@@ -230,7 +240,9 @@ class HumanoidEnvCfg(ManagerBasedRLEnvCfg):
     """Configuration for the MuJoCo-style Humanoid walking environment."""
 
     # Scene settings
-    scene: MySceneCfg = MySceneCfg(num_envs=4096, env_spacing=5.0, clone_in_fabric=True)
+    # Contact views for the instanceable humanoid currently fail to enumerate
+    # cloned bodies under Isaac Sim 5.1's Windows Fabric path.
+    scene: MySceneCfg = MySceneCfg(num_envs=4096, env_spacing=5.0, clone_in_fabric=False)
     # Basic settings
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()

@@ -21,7 +21,7 @@
 ## Installation
 
 ```bash
-conda env create --prefix ./env python=3.10
+conda create --prefix ./env python=3.10
 conda activate ./env
 # There are options for installing JAX for CUDA and for CPU in requirements.txt;
 # it is set to CPU by default.
@@ -29,12 +29,121 @@ pip install -r requirements.txt
 
 ```
 
-Copy the contents of `humanoid_env_cfg.py` to `IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/classic/humanoid/humanoid_env_cfg.py`
+### Isaac Lab backend
 
-Installing IsaacLab:
+Isaac Lab uses a separate environment because its Python, PyTorch, and CUDA
+requirements conflict with the Brax/JAX environment above. This integration
+targets Isaac Lab 2.3.2, Isaac Sim 5.1, and Python 3.11.
+
+Isaac Sim must run on native Windows or native Linux with a supported NVIDIA
+GPU and driver; its Python package does not support WSL2. On Windows, enable
+long paths or choose a short Conda environment path if package installation
+hits the Windows path-length limit.
+
+From the repository root, create the environment and install its dependencies:
+
 ```bash
-https://isaac-sim.github.io/IsaacLab/v2.1.1/source/setup/installation/pip_installation.html
+conda create -n ppga-isaaclab python=3.11 pip
+conda activate ppga-isaaclab
+
+# flatdict 4.0.1 is incompatible with the newest isolated setuptools build.
+python -m pip install "pip<26" "setuptools<81"
+python -m pip install --no-build-isolation flatdict==4.0.1
+python -m pip install "isaaclab[isaacsim,all]==2.3.2" --extra-index-url https://pypi.nvidia.com
+
+# Use this CUDA 12.8 build for Blackwell GPUs (such as the RTX 50 series).
+# Other GPUs may use the PyTorch build selected by Isaac Lab instead.
+python -m pip install --force-reinstall torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cu128
+python -m pip install -r requirements-isaaclab.txt
 ```
+
+Accept the Isaac Sim EULA in each shell that launches training:
+
+```bash
+# Linux (bash)
+export OMNI_KIT_ACCEPT_EULA=YES
+```
+
+```powershell
+# Windows (PowerShell)
+$env:OMNI_KIT_ACCEPT_EULA = 'YES'
+```
+
+Run a small PPO smoke test before a full QD experiment:
+
+```bash
+python -m ppga.RL.train_ppo --env_name=humanoid --env_type=isaac --env_batch_size=64 --rollout_length=32 --total_timesteps=65536 --num_minibatches=4 --update_epochs=5 --num_dims=2 --value_bootstrap=True
+```
+
+Run the full local PPGA preset from a Bash-compatible shell, or submit its
+Slurm preset on a cluster:
+
+```bash
+bash runners/local/train_ppga_humanoid.sh
+sbatch runners/slurm/train_ppga_humanoid_slurm.sh
+```
+
+The presets use thousands of parallel environments and are intended for GPUs
+with ample VRAM. For local validation, copy the module command from the runner
+and reduce `--env_batch_size`, `--popsize`, and `--total_iterations`. Cluster
+users must also adapt the `#SBATCH` settings, modules, environment name, and any
+container path in the Slurm script to their site.
+
+### MJLab manipulation backend
+
+MJLab is optional and uses a separate environment because its MuJoCo Warp and
+PyTorch dependencies evolve independently of Isaac Lab. The pinned environment
+is intended for Linux x86-64 with an NVIDIA GPU; WSL2 can be used for local
+MJLab runs when GPU passthrough is configured. The first integrated task is the
+state-based YAM cube-lift task.
+
+From the repository root:
+
+```bash
+conda create -n ppga-mjlab python=3.11 pip
+conda activate ppga-mjlab
+python -m pip install -r requirements-mjlab.txt
+```
+
+Run a small PPO smoke test:
+
+```bash
+python -m ppga.RL.train_ppo --env_name=lift_cube --env_type=mjlab --env_batch_size=256 --rollout_length=32 --total_timesteps=262144 --num_minibatches=4 --update_epochs=5 --num_dims=2 --value_bootstrap=True
+```
+
+Run the full local PPGA preset or submit the Slurm preset:
+
+```bash
+bash runners/local/train_ppga_mjlab_lift_cube.sh
+sbatch runners/slurm/train_ppga_mjlab_lift_cube_slurm.sh
+```
+
+As with Isaac Lab, lower the runner's environment count and iteration count for
+local validation, and adapt the Slurm resource and environment settings to the
+target cluster.
+
+The MJLab backend uses two dense descriptors in `[0, 1]`: average end-effector
+proximity to the cube and average cube proximity to its commanded goal. The
+adapter disables MJLab auto-reset, records the true terminal observation and
+descriptors, then partially resets only completed environments.
+
+### Transition and reset semantics
+
+Isaac and MJLab now follow the same QD transition contract. `info` contains
+`measures`, dt-scaled `measure_rewards`, `final_observation`,
+`final_observation_mask`, and `final_measures`. PPO uses the pre-reset final
+observation for time-limit bootstrapping; it raises an error instead of using a
+post-reset state when terminal data is unavailable.
+
+Each DQD gradient, branch-evaluation, and mean-movement phase still begins with
+a reset because those phases change the policy-to-environment assignment.
+`PPO.train(..., reset_env=False)` is available only for consecutive calls with
+the identical policy grouping; assigning `ppo.agents` invalidates continuity
+automatically.
+
+The corrected terminal descriptors change archive semantics. Do not resume an
+Isaac archive produced before this change in a new run; reevaluate old policies
+under the new adapter if a comparison is required.
 
 ## Running PPO for Diverse Generators Work
 
@@ -145,33 +254,24 @@ For example, if you use miniconda, this would be
 
 ## Running Experiments
 
-We provide run scripts to reproduce the paper results for both local machines
-and slurm.
+Run all commands from the repository root. The backend-specific installation,
+smoke-test, local PPGA, and Slurm commands are documented above under
+**Isaac Lab backend** and **MJLab manipulation backend**. Brax paper presets
+remain under `runners/local/` and `runners/slurm/`.
 
-### local
+For the complete PPO and QD command-line options:
 
 ```bash
-# from PPGA root. Ex. to run humanoid
-./runners/local/train_ppga_humanoid.sh
+python -m ppga.RL.train_ppo --help
+python -m ppga.algorithm.train_ppga --help
+python -m ppga.algorithm.train_ppga_isaac --help
 ```
 
-### slurm
+For example, a Brax ant preset can be run locally or through Slurm with:
 
 ```bash
-# from PPGA root. Ex to run humanoid
-sbatch runners/slurm/train_ppga_humanoid.sh
-```
-
-For a full list of configurable hyperparameters with descriptions:
-
-```bash
-python3 -m algorithm.train_ppga --help
-```
-
-To run with Isaac (note that the actor/critic architecture and PPO hyperparameters are changed):
-
-```bash
-sbatch runners/slurm/train_ppga_humanoid_slurm.sh
+bash runners/local/train_ppga_ant.sh
+sbatch runners/slurm/train_ppga_ant_slurm.sh
 ```
 
 ## Evaluating an Archive

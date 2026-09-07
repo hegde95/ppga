@@ -1,4 +1,3 @@
-import gym
 import torch
 import torch.nn as nn
 
@@ -55,15 +54,16 @@ class ObsNormalizer(nn.Module):
         self.obs_rms = RunningMeanStd(shape=obs_space_shape)
         self.epsilon = epsilon
 
-    def forward(self, obs):
+    def forward(self, obs, update=True):
         with torch.no_grad():
-            obs = self.normalize(obs)
+            obs = self.normalize(obs, update=update)
         return obs
 
-    def normalize(self, obs):
+    def normalize(self, obs, update=True):
         """Normalises the observation using the running mean and variance of the observations."""
         obs = obs.to(self.obs_rms.mean.device)
-        self.obs_rms.update(obs)
+        if update:
+            self.obs_rms.update(obs)
         return (obs - self.obs_rms.mean) / torch.sqrt(self.obs_rms.var + self.epsilon)
 
 

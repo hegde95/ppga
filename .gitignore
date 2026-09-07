@@ -1,6 +1,8 @@
 *.swp
 __pycache__/
 env/
+.venv-isaaclab/
+.tools/
 build/
 *.egg-info/
 log.txt

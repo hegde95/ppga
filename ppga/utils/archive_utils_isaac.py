@@ -2,17 +2,11 @@ import os
 import pickle
 from typing import Optional
 
-import jax
-import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas
 import torch
 from box import Box
-from jax._src.flatten_util import ravel_pytree
-from qdax import environments
-from qdax.core.containers.mapelites_repertoire import MapElitesRepertoire
-from qdax.core.neuroevolution.networks.networks import MLP
 from ribs.archives import CVTArchive, GridArchive
 from ribs.visualize import cvt_archive_heatmap
 
@@ -326,6 +320,14 @@ def reevaluate_pgame_archive(env_cfg,
 
 
 def pgame_repertoire_to_pyribs_archive(cp_path, env_cfg, save_path=None):
+    # QDax is optional for Isaac training; import it only for conversion jobs.
+    import jax
+    import jax.numpy as jnp
+    from jax._src.flatten_util import ravel_pytree
+    from qdax import environments
+    from qdax.core.containers.mapelites_repertoire import MapElitesRepertoire
+    from qdax.core.neuroevolution.networks.networks import MLP
+
     # define the environment
     env_name = env_cfg.env_name
     seed = env_cfg.seed

@@ -34,8 +34,11 @@ python -m ppga.algorithm.train_ppga_isaac \
   --update_epochs=5 \
   --normalize_obs=False \
   --normalize_returns=False \
-  --adaptive_stddev=False \
+  --adaptive_stddev=True \
   --clip_obs_rew=True \
+  --action_transform=tanh \
+  --eval_deterministic=True \
+  --value_bootstrap=True \
   --wandb_run_name=$RUN_NAME \
   --popsize=300 \
   --env_batch_size=6000 \

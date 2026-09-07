@@ -7,6 +7,8 @@ from distutils.util import strtobool
 from box import Box
 
 from ppga.RL.ppo import PPO
+from ppga.envs.factory import make_vec_env
+from ppga.envs.qd_env import policy_observation_space
 from ppga.utils.utilities import config_wandb, log
 
 
@@ -40,7 +42,8 @@ def parse_args():
     parser.add_argument('--total_timesteps', type=int, default=1000000)
     parser.add_argument('--env_type',
                         type=str,
-                        choices=['brax', 'isaac'],
+                        choices=['brax', 'isaac', 'mjlab'],
+                        default='brax',
                         help='Whether to use cpu-envs or gpu-envs for rollouts')
     # args for brax
     parser.add_argument('--env_batch_size',
@@ -140,8 +143,8 @@ def parse_args():
         help='Normalize rewards across a batch using running mean and stddev')
     parser.add_argument('--value_bootstrap',
                         type=lambda x: bool(strtobool(x)),
-                        default=False,
-                        help='Use bootstrap value estimates')
+                        default=None,
+                        help='Bootstrap artificial time limits (default: on for Isaac/MJLab)')
 
     parser.add_argument('--weight_decay',
                         type=float,
@@ -152,6 +155,21 @@ def parse_args():
                         type=lambda x: bool(strtobool(x)),
                         default=False,
                         help='Clip obs and rewards b/w -10 and 10')
+    parser.add_argument('--action_transform',
+                        choices=['none', 'clip', 'tanh'],
+                        default=None,
+                        help='Bound policy actions; defaults to tanh for Isaac and none for Brax')
+    parser.add_argument('--eval_deterministic',
+                        type=lambda x: bool(strtobool(x)),
+                        default=True,
+                        help='Use policy means rather than samples during evaluation')
+    parser.add_argument('--eval_max_steps', type=int, default=0)
+    parser.add_argument('--measure_reward_scale',
+                        type=float,
+                        default=None,
+                        help='Isaac DQD descriptor reward scale; defaults to env.step_dt')
+    parser.add_argument('--episode_length_s', type=float, default=None,
+                        help='Override the simulator episode horizon in seconds')
 
     # vestigial QD params
     parser.add_argument('--num_dims', type=int)
@@ -167,12 +185,13 @@ if __name__ == '__main__':
     if cfg.seed is None:
         cfg.seed = int(time.time()) + int(os.getpid())
 
-    if cfg.env_type == 'brax':
-        from ppga.envs.brax_custom.brax_env import make_vec_env_brax
-        vec_env = make_vec_env_brax(cfg)
-    else:
-        from ppga.envs.isaac_lab.isaac_env import make_vec_env_isaac
-        vec_env = make_vec_env_isaac(cfg)
+    vec_env = make_vec_env(cfg)
+
+    if cfg.action_transform is None:
+        cfg.action_transform = (
+            'tanh' if cfg.env_type in ('isaac', 'mjlab') else 'none')
+    if cfg.value_bootstrap is None:
+        cfg.value_bootstrap = cfg.env_type in ('isaac', 'mjlab')
 
     cfg.batch_size = int(cfg.env_batch_size * cfg.rollout_length)
     cfg.num_envs = int(cfg.env_batch_size)
@@ -180,8 +199,9 @@ if __name__ == '__main__':
     cfg.envs_per_model = cfg.num_envs // cfg.num_emitters
     cfg.minibatch_size = int(cfg.batch_size // cfg.num_minibatches)
 
-    # [1:] ignores the batch dimension.
-    cfg.obs_shape = vec_env.observation_space.shape[1:]
+    # Isaac exposes a Dict observation space; Brax exposes a flat Box.
+    observation_space = policy_observation_space(vec_env.observation_space)
+    cfg.obs_shape = observation_space.shape[1:]
     cfg.action_shape = vec_env.action_space.shape[1:]
 
     log.debug(
@@ -199,4 +219,9 @@ if __name__ == '__main__':
     alg = PPO(cfg)
     num_updates = cfg.total_timesteps // cfg.batch_size
     alg.train(vec_env, num_updates, rollout_length=cfg.rollout_length)
+    alg.evaluate(alg.vec_inference,
+                 vec_env,
+                 verbose=True,
+                 deterministic=cfg.eval_deterministic)
+    vec_env.close()
     sys.exit(0)

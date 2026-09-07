@@ -19,7 +19,8 @@ class Actor(StochasticPolicy):
                  obs_shape: Union[int, tuple],
                  action_shape: np.ndarray,
                  normalize_obs: bool = False,
-                 normalize_returns: bool = False):
+                 normalize_returns: bool = False,
+                 action_transform: str = "none"):
         StochasticPolicy.__init__(self,
                                   normalize_obs=normalize_obs,
                                   obs_shape=obs_shape,
@@ -41,12 +42,16 @@ class Actor(StochasticPolicy):
         )
 
         self.actor_logstd = nn.Parameter(torch.zeros(1, np.prod(action_shape)))
+        if action_transform not in {"none", "clip", "tanh"}:
+            raise ValueError(f"Unknown action transform: {action_transform}")
+        self.action_transform = action_transform
+        self.last_raw_action = None
 
     def forward(self, x):
         """Executes the mean action for the given observation."""
         return self.actor_mean(x)
 
-    def get_action(self, obs, action=None):
+    def get_action(self, obs, action=None, deterministic=False):
         """Samples an action (instead of just taking the mean) and returns
         corresponding info for the sample (logprob and entropy)."""
         action_mean = self.actor_mean(obs)
@@ -54,8 +59,32 @@ class Actor(StochasticPolicy):
         action_std = torch.exp(action_logstd)
         probs = torch.distributions.Normal(action_mean, action_std)
         if action is None:
-            action = probs.sample()
-        return action, probs.log_prob(action).sum(1), probs.entropy()
+            raw_action = action_mean if deterministic else probs.sample()
+            if self.action_transform == "tanh":
+                action = torch.tanh(raw_action)
+            elif self.action_transform == "clip":
+                action = raw_action.clamp(-1.0, 1.0)
+            else:
+                action = raw_action
+        elif self.action_transform == "tanh":
+            # Invert the squashing transform to evaluate stored actions during
+            # PPO updates. Clamping avoids infinities at exactly +/-1.
+            eps = torch.finfo(action.dtype).eps
+            raw_action = torch.atanh(action.clamp(-1.0 + eps, 1.0 - eps))
+        else:
+            raw_action = action
+
+        self.last_raw_action = raw_action
+        likelihood_action = action if self.action_transform == "clip" else raw_action
+        logprob = probs.log_prob(likelihood_action)
+        if self.action_transform == "tanh":
+            # Change-of-variables correction for tanh-squashed Gaussians.
+            logprob -= torch.log(1.0 - action.square() + 1e-6)
+        logprob = logprob.sum(1)
+        # A squashed Gaussian has no simple analytic entropy. This sampled
+        # estimate is sufficient for logging / entropy regularization.
+        entropy = -logprob if self.action_transform == "tanh" else probs.entropy().sum(1)
+        return action, logprob, entropy
 
     def get_action_2(self, obs, action=None):
         """Fixed version of get_action.

@@ -11,7 +11,8 @@ import wandb
 from box import Box
 from ribs.schedulers import Scheduler
 
-from ppga.envs.isaac_lab.isaac_env import make_vec_env_isaac, reward_offset
+from ppga.envs.factory import make_vec_env, reward_offset
+from ppga.envs.qd_env import policy_observation_space
 from ppga.models.actor_critic import Actor
 from ppga.qd.archives import GridArchive
 from ppga.qd.emitters import PPGAEmitter
@@ -43,6 +44,9 @@ def parse_args():
     # PPO params
     parser = argparse.ArgumentParser()
     parser.add_argument('--env_name', type=str)
+    parser.add_argument('--env_type', choices=['isaac', 'mjlab'],
+                        default='isaac',
+                        help='GPU simulator backend')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument(
         "--torch_deterministic",
@@ -149,8 +153,8 @@ def parse_args():
         help='Normalize returns across a batch using running mean and stddev')
     parser.add_argument('--value_bootstrap',
                         type=lambda x: bool(strtobool(x)),
-                        default=False,
-                        help='Use bootstrap value estimates')
+                        default=None,
+                        help='Bootstrap artificial time limits (default: enabled)')
     parser.add_argument('--weight_decay',
                         type=float,
                         default=None,
@@ -159,6 +163,21 @@ def parse_args():
                         type=lambda x: bool(strtobool(x)),
                         default=False,
                         help='Clip obs and rewards b/w -10 and 10')
+    parser.add_argument('--action_transform',
+                        choices=['none', 'clip', 'tanh'],
+                        default='tanh',
+                        help='Policy action bounding; tanh uses corrected log probabilities')
+    parser.add_argument('--eval_deterministic',
+                        type=lambda x: bool(strtobool(x)),
+                        default=True,
+                        help='Use policy means rather than samples for archive evaluation')
+    parser.add_argument('--eval_max_steps', type=int, default=0)
+    parser.add_argument('--measure_reward_scale',
+                        type=float,
+                        default=None,
+                        help='DQD descriptor reward scale; defaults to env.step_dt')
+    parser.add_argument('--episode_length_s', type=float, default=None,
+                        help='Override the simulator episode horizon in seconds')
 
     # QD Params
     parser.add_argument("--num_emitters",
@@ -315,11 +334,11 @@ def create_scheduler(cfg: Box,
     log.debug(f'Environment {cfg.env_name}, {action_dim=}, {obs_dim=}')
     batch_size = cfg.popsize
     # empirically calculated for brax envs to make the qd-score strictly positive
-    cur_reward_offset = reward_offset[cfg.env_name]
+    cur_reward_offset = reward_offset.get(cfg.env_name, 0.0)
 
     if initial_sol is None:
         initial_agent = Actor(obs_shape, action_shape, cfg.normalize_obs,
-                              cfg.normalize_returns)
+                              cfg.normalize_returns, cfg.action_transform)
         initial_sol = initial_agent.serialize()
     solution_dim = len(initial_sol)
     mode = 'batch'
@@ -522,224 +541,189 @@ def train_ppga(cfg: Box, vec_env):
         0].itrs  # if loading a checkpoint, this will be > 0
     itrs = cfg.total_iterations
     # main loop
-    for itr in range(starting_iter, itrs + 1):
-        # # Current solution point. returns a single sol per emitter
-        # solution_batch = scheduler.ask_dqd()
-        # mean_agent = Actor(obs_shape, action_shape, cfg.normalize_obs,
-        #                    cfg.normalize_returns).deserialize(
-        #                        solution_batch.flatten()).to(device)
-        # # whether to reset the stddev param for the action distribution
-        # if not cfg.adaptive_stddev:
-        #     mean_agent.actor_logstd = torch.nn.Parameter(
-        #         torch.zeros(1, np.prod(cfg.action_shape)))
+    for itr in range(starting_iter, itrs):
+        # Current solution point. Returns a single solution per emitter.
+        solution_batch = scheduler.ask_dqd()
+        mean_agent = Actor(obs_shape, action_shape, cfg.normalize_obs,
+                           cfg.normalize_returns,
+                           cfg.action_transform).deserialize(
+                               solution_batch.flatten()).to(device)
+        if not cfg.adaptive_stddev:
+            mean_agent.actor_logstd = torch.nn.Parameter(
+                torch.zeros(1, np.prod(cfg.action_shape), device=device))
 
-        # if cfg.normalize_obs:
-        #     if scheduler.emitters[0].mean_agent_obs_normalizer is not None:
-        #         mean_agent.obs_normalizer = scheduler.emitters[
-        #             0].mean_agent_obs_normalizer
+        if cfg.normalize_obs:
+            if scheduler.emitters[0].mean_agent_obs_normalizer is not None:
+                mean_agent.obs_normalizer = scheduler.emitters[
+                    0].mean_agent_obs_normalizer
+        if cfg.normalize_returns:
+            if scheduler.emitters[0].mean_agent_return_normalizer is not None:
+                mean_agent.return_normalizer = scheduler.emitters[
+                    0].mean_agent_return_normalizer
 
-        # if cfg.normalize_returns:
-        #     if scheduler.emitters[0].mean_agent_return_normalizer is not None:
-        #         mean_agent.return_normalizer = scheduler.emitters[
-        #             0].mean_agent_return_normalizer
-
-        # ppo.agents = [mean_agent]
+        ppo.agents = [mean_agent]
         # calculate gradients of f and m
-        # objs, measures, jacobian, metadata = ppo.train(
-        #     vec_env=vec_env,
-        #     num_updates=cfg.calc_gradient_iters,
-        #     rollout_length=cfg.rollout_length,
-        #     calculate_dqd_gradients=True,
-        #     negative_measure_gradients=False)
-        ## Debugging
-        ppo.train(
+        objs, measures, jacobian, metadata = ppo.train(
             vec_env=vec_env,
             num_updates=cfg.calc_gradient_iters,
             rollout_length=cfg.rollout_length,
-            calculate_dqd_gradients=False,
+            calculate_dqd_gradients=True,
             negative_measure_gradients=False)
 
-        # # for plotting purposes
-        # emitter_loc = (measures[0][0], measures[0][1])
-        # best = max(best, max(objs))
+        emitter_loc = tuple(measures[0, :2])
+        best = max(best, max(objs))
+        scheduler.tell_dqd(objs, measures, jacobian, metadata=metadata)
 
-        # # return the gradients to the scheduler. Will be used for the next step
-        # scheduler.tell_dqd(objs, measures, jacobian, metadata=metadata)
+        branched_sols = scheduler.ask()
+        branched_agents = [
+            Actor(obs_shape, action_shape, cfg.normalize_obs,
+                  cfg.normalize_returns,
+                  cfg.action_transform).deserialize(sol).to(device)
+            for sol in branched_sols
+        ]
+        # Do not overwrite actor_logstd here: it is part of each serialized
+        # solution. Overwriting it makes the evaluated policy differ from the
+        # solution given to scheduler.tell().
+        ppo.agents = branched_agents
 
-        # # using grads from previous step, sample a batch of branched solution points and evaluate their f and m
-        # branched_sols = scheduler.ask()
-        # branched_agents = [
-        #     Actor(obs_shape, action_shape, cfg.normalize_obs,
-        #           cfg.normalize_returns).deserialize(sol).to(device)
-        #     for sol in branched_sols
-        # ]
-        # for agent in branched_agents:
-        #     agent.actor_logstd.data = mean_agent.actor_logstd.data
-        # ppo.agents = branched_agents
-
-        # # since we branched from mean_agent, we will use its obs/return normalizer for the branched agents
-        # # if obs/return normalization is enabled
-        # eval_obs_normalizer = mean_agent.obs_normalizer if cfg.normalize_obs else None
-        # eval_rew_normalizer = mean_agent.return_normalizer if cfg.normalize_returns else None
-
-        # # evaluate the f and m of each branched agent
+        eval_obs_normalizer = mean_agent.obs_normalizer if cfg.normalize_obs else None
+        eval_rew_normalizer = mean_agent.return_normalizer if cfg.normalize_returns else None
         objs, measures, metadata = ppo.evaluate(
             ppo.vec_inference,
             vec_env,
             verbose=True,
-            obs_normalizer=None,
-            return_normalizer=None)
+            obs_normalizer=eval_obs_normalizer,
+            return_normalizer=eval_rew_normalizer,
+            deterministic=cfg.eval_deterministic)
 
-        # if cfg.weight_decay:
-        #     reg_loss = cfg.weight_decay * np.array([
-        #         np.linalg.norm(sol) for sol in branched_sols
-        #     ]).reshape(objs.shape)
-        #     objs -= reg_loss
+        if cfg.weight_decay:
+            reg_loss = cfg.weight_decay * np.array([
+                np.linalg.norm(sol) for sol in branched_sols
+            ]).reshape(objs.shape)
+            objs -= reg_loss
 
-        # best = max(best, max(objs))
+        best = max(best, max(objs))
+        scheduler.tell(objs, measures, metadata=metadata)
+        if scheduler.emitters[0].last_stop_status:
+            log.debug('Emitter restarted. Changing the mean agent...')
+            mean_agent = Actor(
+                obs_shape, action_shape, cfg.normalize_obs,
+                cfg.normalize_returns,
+                cfg.action_transform).deserialize(
+                    scheduler.emitters[0].theta).to(device)
+            if cfg.normalize_obs:
+                mean_agent.obs_normalizer = scheduler.emitters[
+                    0].mean_agent_obs_normalizer
+            if cfg.normalize_returns:
+                mean_agent.return_normalizer = scheduler.emitters[
+                    0].mean_agent_return_normalizer
 
-        # # return the evals to the scheduler. Will be used to update the search distribution in xnes
-        # scheduler.tell(objs, measures, metadata=metadata)
-        # if scheduler.emitters[0].last_stop_status:  # Indicates restart.
-        #     log.debug("Emitter restarted. Changing the mean agent...")
-        #     mean_soln_point = scheduler.emitters[0].theta
-        #     mean_agent = Actor(
-        #         obs_shape, action_shape, cfg.normalize_obs,
-        #         cfg.normalize_returns).deserialize(mean_soln_point).to(device)
+        mean_grad_coeffs = np.expand_dims(
+            scheduler.emitters[0].opt.mu, axis=0).astype(np.float32)
+        log.info(f'New mean coefficients: {mean_grad_coeffs}')
 
-        #     # load the obs/return normalizer used for this agent
-        #     if cfg.normalize_obs:
-        #         mean_agent.obs_normalizer = scheduler.emitters[
-        #             0].mean_agent_obs_normalizer
-        #     if cfg.normalize_returns:
-        #         mean_agent.return_normalizer = scheduler.emitters[
-        #             0].mean_agent_return_normalizer
-        #     if not cfg.adaptive_stddev:
-        #         mean_agent.actor_logstd = torch.nn.Parameter(
-        #             torch.zeros(1, np.prod(cfg.action_shape)))
+        ppo.grad_coeffs = mean_grad_coeffs
+        ppo.agents = [mean_agent]
+        log.info('Moving the mean solution point...')
+        ppo.train(vec_env=vec_env,
+                  num_updates=cfg.move_mean_iters,
+                  rollout_length=cfg.rollout_length,
+                  calculate_dqd_gradients=False,
+                  move_mean_agent=True)
 
-        # mean_grad_coeffs = scheduler.emitters[
-        #     0].opt.mu  # keep track of where the emitter is taking us
-        # mean_grad_coeffs = np.expand_dims(mean_grad_coeffs,
-        #                                   axis=0).astype(np.float32)
-        # log.info(f'New mean coefficients: {mean_grad_coeffs}')
+        trained_mean_agent = ppo.agents[0]
+        scheduler.emitters[0].update_theta(trained_mean_agent.serialize())
+        if cfg.normalize_obs:
+            scheduler.emitters[
+                0].mean_agent_obs_normalizer = trained_mean_agent.obs_normalizer
+        if cfg.normalize_returns:
+            scheduler.emitters[
+                0].mean_agent_return_normalizer = trained_mean_agent.return_normalizer
 
-        # # now we walk the solution point in the direction given by the new gradient coefficients
-        # ppo.grad_coeffs = mean_grad_coeffs
-        # ppo.agents = [mean_agent]
-        # log.info('Moving the mean solution point...')
-        # ppo.train(vec_env=vec_env,
-        #           num_updates=cfg.move_mean_iters,
-        #           rollout_length=cfg.rollout_length,
-        #           calculate_dqd_gradients=False,
-        #           move_mean_agent=True)
+        completed_itr = itr + 1
+        log.debug(
+            f'{completed_itr=}, {itrs=}, '
+            f'Progress: {(100.0 * (completed_itr / itrs)):.2f}%')
 
-        # # get the resulting new mean solution point and update the scheduler
-        # trained_mean_agent = ppo.agents[0]
-        # scheduler.emitters[0].update_theta(trained_mean_agent.serialize())
+        if cfg.num_dims <= 2:
+            save_heatmap(result_archive,
+                         os.path.join(str(heatmap_dir), f'heatmap_{completed_itr:05d}.png'),
+                         emitter_loc=emitter_loc,
+                         forces=None)
 
-        # # Update the obs and return normalizers in the scheduler.
-        # #
-        # # Note: If the emitter restarts on the first iteration, it will fail
-        # # because the normalizers are only set here.
-        # if cfg.normalize_obs:
-        #     scheduler.emitters[
-        #         0].mean_agent_obs_normalizer = trained_mean_agent.obs_normalizer
-        # if cfg.normalize_returns:
-        #     scheduler.emitters[
-        #         0].mean_agent_return_normalizer = trained_mean_agent.return_normalizer
+        final_itr = completed_itr == itrs
+        if completed_itr % log_arch_freq == 0 or final_itr:
+            final_cp_dir = os.path.join(cp_dir, f'cp_{completed_itr:08d}')
+            os.makedirs(final_cp_dir, exist_ok=True)
+            result_archive.data(return_type='pandas').to_pickle(
+                os.path.join(final_cp_dir, f'archive_df_{completed_itr:08d}.pkl'))
+            if cfg.save_scheduler:
+                save_scheduler(
+                    scheduler,
+                    os.path.join(final_cp_dir, f'scheduler_{completed_itr:08d}.pkl'))
 
-        # # logging
-        log.debug(f'{itr=}, {itrs=}, Progress: {(100.0 * (itr / itrs)):.2f}%')
+        while len(get_checkpoints(str(cp_dir))) > 2:
+            oldest_checkpoint = get_checkpoints(str(cp_dir))[0]
+            if os.path.exists(oldest_checkpoint):
+                log.info(f'Removing checkpoint {oldest_checkpoint}')
+                shutil.rmtree(oldest_checkpoint)
 
-        # if cfg.num_dims <= 2:
-        #     save_heatmap(result_archive,
-        #                  os.path.join(str(heatmap_dir),
-        #                               f'heatmap_{itr:05d}.png'),
-        #                  emitter_loc=emitter_loc,
-        #                  forces=None)
+        if completed_itr % log_freq == 0 or final_itr:
+            with open(summary_filename, 'a') as summary_file:
+                csv.writer(summary_file).writerow([
+                    completed_itr, result_archive.stats.qd_score,
+                    result_archive.stats.coverage, result_archive.stats.obj_max,
+                    result_archive.stats.obj_mean
+                ])
 
-        # # Save the archive at the given frequency.
-        # # Always save on the final iteration.
-        # final_itr = itr == itrs
-        # if (itr > 0 and itr % log_arch_freq == 0) or final_itr:
-        #     final_cp_dir = os.path.join(cp_dir, f'cp_{itr:08d}')
-        #     if not os.path.exists(final_cp_dir):
-        #         os.mkdir(final_cp_dir)
-        #     # Save a full archive for analysis.
-        #     df = result_archive.data(return_type="pandas")
-        #     df.to_pickle(os.path.join(final_cp_dir,
-        #                               f"archive_df_{itr:08d}.pkl"))
+        if (completed_itr % log_freq == 0 or final_itr) and cfg.take_archive_snapshots:
+            with open(archive_snapshot_filename, 'a') as archive_snapshot_file:
+                num_cells = np.prod(scheduler.result_archive.dims)
+                elite_scores = [0 for _ in range(num_cells)]
+                for elite in scheduler.result_archive:
+                    elite_scores[elite.index] = elite.objective
+                csv.writer(archive_snapshot_file).writerow([completed_itr] + elite_scores)
 
-        #     if cfg.save_scheduler:
-        #         scheduler_savepath = os.path.join(final_cp_dir,
-        #                                           f'scheduler_{itr:08d}.pkl')
-        #         save_scheduler(scheduler, scheduler_savepath)
-
-        # # save the top 2 checkpoints, delete older ones
-        # while len(get_checkpoints(str(cp_dir))) > 2:
-        #     oldest_checkpoint = get_checkpoints(str(cp_dir))[0]
-        #     if os.path.exists(oldest_checkpoint):
-        #         log.info(f'Removing checkpoint {oldest_checkpoint}')
-        #         shutil.rmtree(oldest_checkpoint)
-
-        # # Update the summary statistics for the archive
-        # if (itr > 0 and itr % log_freq == 0) or final_itr:
-        #     with open(summary_filename, 'a') as summary_file:
-        #         writer = csv.writer(summary_file)
-        #         data = [
-        #             itr, result_archive.stats.qd_score,
-        #             result_archive.stats.coverage, result_archive.stats.obj_max,
-        #             result_archive.stats.obj_mean
-        #         ]
-        #         writer.writerow(data)
-
-        # if (itr > 0 and itr % log_freq == 0 and
-        #         cfg.take_archive_snapshots) or (final_itr and
-        #                                         cfg.take_archive_snapshots):
-        #     with open(archive_snapshot_filename, 'a') as archive_snapshot_file:
-        #         writer = csv.writer(archive_snapshot_file)
-        #         num_cells = np.prod(scheduler.result_archive.dims)
-        #         elite_scores = [0 for _ in range(num_cells)]
-        #         for elite in scheduler.result_archive:
-        #             score, index = elite.objective, elite.index
-        #             elite_scores[index] = score
-        #         data = [itr] + elite_scores
-        #         writer.writerow(data)
-
-        # if cfg.use_wandb:
-        #     with torch.no_grad():
-        #         normA = torch.linalg.norm(
-        #             scheduler.emitters[0].opt.A).cpu().numpy().item()
-        #     wandb.log({
-        #         "QD/QD Score": scheduler.result_archive.offset_qd_score,
-        #         # use regular archive for qd score because it factors in the return offset
-        #         "QD/average performance": result_archive.stats.obj_mean,
-        #         "QD/coverage (%)": result_archive.stats.coverage * 100.0,
-        #         "QD/best score": result_archive.stats.obj_max,
-        #         "QD/iteration": itr,
-        #         "QD/restarts": scheduler.emitters[0].restarts,
-        #         'QD/mean_coeff_obj': mean_grad_coeffs[0][0],
-        #         'XNES/norm_A': normA
-        #     })
-        #     for i in range(1, cfg.num_dims + 1):
-        #         wandb.log({
-        #             'QD/iteration': itr,
-        #             f'QD/mean_coeff_measure{i}': mean_grad_coeffs[0][i]
-        #         })
+        if cfg.use_wandb:
+            with torch.no_grad():
+                normA = torch.linalg.norm(
+                    scheduler.emitters[0].opt.A).cpu().numpy().item()
+            qd_metrics = {
+                'QD/QD Score': scheduler.result_archive.offset_qd_score,
+                'QD/average performance': result_archive.stats.obj_mean,
+                'QD/coverage (%)': result_archive.stats.coverage * 100.0,
+                'QD/best score': result_archive.stats.obj_max,
+                'QD/iteration': completed_itr,
+                'QD/restarts': scheduler.emitters[0].restarts,
+                'QD/mean_coeff_obj': mean_grad_coeffs[0][0],
+                'XNES/norm_A': normA,
+            }
+            for i in range(1, cfg.num_dims + 1):
+                qd_metrics[f'QD/mean_coeff_measure{i}'] = mean_grad_coeffs[0][i]
+            wandb.log(qd_metrics)
 
 
 def main():
     cfg = parse_args()
+    if cfg.total_iterations < 1:
+        raise ValueError('total_iterations must be at least 1')
     cfg.num_emitters = 1
-    vec_env = make_vec_env_isaac(cfg)
+    vec_env = make_vec_env(cfg)
+    if cfg.value_bootstrap is None:
+        cfg.value_bootstrap = True
     cfg.batch_size = int(cfg.env_batch_size * cfg.rollout_length)
     cfg.num_envs = int(cfg.env_batch_size)
 
     cfg.minibatch_size = int(cfg.batch_size // cfg.num_minibatches)
 
+    if cfg.env_batch_size % (cfg.num_dims + 1) != 0:
+        raise ValueError('env_batch_size must be divisible by num_dims + 1 for DQD gradients')
+    if cfg.env_batch_size % cfg.popsize != 0:
+        raise ValueError('env_batch_size must be divisible by popsize for branch evaluation')
+
     # [1:] ignores the batch dimension.
-    cfg.obs_shape = vec_env.observation_space['policy'].shape[1:]
+    cfg.obs_shape = policy_observation_space(
+        vec_env.observation_space).shape[1:]
     cfg.action_shape = vec_env.action_space.shape[1:]
 
     if cfg.use_wandb:

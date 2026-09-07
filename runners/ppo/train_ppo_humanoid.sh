@@ -9,7 +9,7 @@ RUN_NAME="ppo_"$ENV_NAME"_seed_"$SEED
 echo $RUN_NAME
 python -m ppga.RL.train_ppo \
   --env_name=$ENV_NAME \
-  --env_type=jax \
+  --env_type=isaac \
   --rollout_length=32 \
   --use_wandb=True \
   --wandb_group=btjanaka \
@@ -29,7 +29,10 @@ python -m ppga.RL.train_ppo \
   --target_kl=0.01 \
   --max_grad_norm=1 \
   --total_timesteps=100000000 \
-  --clip_obs_rew=False
+  --clip_obs_rew=False \
+  --action_transform=tanh \
+  --eval_deterministic=True \
+  --value_bootstrap=True
   # --expdir=./experiments/paper_ppga_"$ENV_NAME"
   # --popsize=300 \
   # --total_iterations=2000 \

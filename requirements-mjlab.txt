@@ -1,0 +1,17 @@
+# Install in a separate Linux/WSL environment from Isaac Lab.
+# MJLab 1.6 uses MuJoCo Warp and supports Python 3.10-3.13. Pin the
+# Blackwell-compatible CUDA 12.8 build rather than allowing PyPI to select a
+# newer CUDA 13 PyTorch build that may exceed a cluster's driver version.
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.7.0
+torchvision==0.22.0
+mjlab==1.6.0
+
+# PPGA host-side dependencies. Do not install requirements.txt here because it
+# pins an older PyTorch and adds the unrelated Brax/JAX stack.
+gymnasium>=1.0
+evotorch==0.5.1
+ribs[all]==0.7.1
+python-box[all]~=7.0
+colorlog
+pandas
