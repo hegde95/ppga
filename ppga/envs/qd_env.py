@@ -15,6 +15,7 @@ FINAL_OBSERVATION_MASK = "final_observation_mask"
 FINAL_MEASURES = "final_measures"
 MEASURES = "measures"
 MEASURE_REWARDS = "measure_rewards"
+TASK_METRICS = "task_metrics"
 
 
 @runtime_checkable
