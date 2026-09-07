@@ -108,7 +108,7 @@ python -m pip install -r requirements-mjlab.txt
 Run a small PPO smoke test:
 
 ```bash
-python -m ppga.RL.train_ppo --env_name=lift_cube --env_type=mjlab --env_batch_size=256 --rollout_length=24 --total_timesteps=262144 --num_minibatches=4 --update_epochs=5 --learning_rate=0.001 --entropy_coef=0.005 --target_kl=0.01 --adaptive_kl=True --norm_adv_per_minibatch=False --mixed_precision=False --normalize_obs=True --action_transform=none --action_std_parameterization=direct --initial_action_std=0.5 --actor_hidden_dims 512 256 128 --num_dims=2 --value_bootstrap=True --mjlab_fixed_goal=False --mjlab_disable_curriculum=True --mjlab_command_resampling_time=40 --mjlab_descriptor_mode=height_approach
+python -m ppga.RL.train_ppo --env_name=lift_cube --env_type=mjlab --env_batch_size=256 --rollout_length=24 --total_timesteps=262144 --num_minibatches=4 --update_epochs=5 --learning_rate=0.001 --entropy_coef=0.005 --target_kl=0.01 --adaptive_kl=True --norm_adv_per_minibatch=False --mixed_precision=False --normalize_obs=True --action_transform=none --action_std_parameterization=direct --initial_action_std=0.5 --actor_hidden_dims 512 256 128 --num_dims=2 --value_bootstrap=True --mjlab_fixed_goal=False --mjlab_disable_curriculum=True --mjlab_command_resampling_time=40 --mjlab_descriptor_mode=motion_effort
 ```
 
 To verify the installed simulator and task independently of PPGA's PPO, run
@@ -172,15 +172,20 @@ The recommended MJLab preset randomizes the cube and goal once per episode,
 disables the reward curriculum, and makes the command-resampling interval
 longer than the episode. This is a stationary task distribution without
 mid-episode cube teleports. A single fixed 30 cm target was empirically prone
-to a reach-only local optimum. Descriptors in `[0, 1]` are normalized cube
-height and the lateral side from which the end effector approaches the cube.
-`--mjlab_descriptor_mode=progress` preserves the older end-effector/cube and
-cube/goal proximity descriptors for explicit legacy comparisons.
+to a reach-only local optimum. The default `motion_effort` descriptors in
+`[0, 1]` are mean absolute arm-joint speed, normalized by the task's velocity
+penalty threshold, and mean absolute joint-space actuator effort, normalized
+by each actuator's configured effort limit. Both exclude the gripper joints.
+`height_approach` and `progress` preserve the earlier descriptor definitions
+for loading or reproducing older archives.
 
 Task metrics are logged during PPO and stored in elite metadata. PPGA's
 `summary.csv` includes archive mean/max success rate and maximum object height.
-The default PPGA preset rejects objectives below zero, saves archive-only
-checkpoints every 25 iterations, and saves heatmaps every 10 iterations to
+The default PPGA preset admits only policies with at least 50% episode success,
+in addition to rejecting objectives below zero. Dense task and descriptor
+rewards remain available for PPO/DQD gradients, so this gate changes archive
+eligibility rather than making gradient learning sparse. Archive-only
+checkpoints are saved every 25 iterations and heatmaps every 10 iterations to
 avoid multi-gigabyte scheduler checkpoints. Set `--save_scheduler=True` only
 when full optimizer/emitter restart state is worth the storage cost.
 
@@ -195,6 +200,24 @@ The output retains stored objective/descriptors alongside fresh objective,
 descriptors, success rate, maximum object height, and minimum goal-position
 error. The adapter disables MJLab auto-reset, records the true terminal state,
 and partially resets only completed environments.
+
+Render representative successful archive policies to MP4 after a checkpoint:
+
+```bash
+ARCHIVE=experiments/ppga_mjlab_episodic_lift_cube/42/checkpoints/cp_00000025/archive_df_00000025.pkl \
+CONFIG=experiments/ppga_mjlab_episodic_lift_cube/42/cfg.json \
+OUTPUT_DIR=experiments/ppga_mjlab_episodic_lift_cube/42/videos/cp_00000025 \
+bash runners/local/render_mjlab_archive.sh
+```
+
+The renderer records the highest-objective successful elite first, then uses
+farthest-point selection in descriptor space to choose four behaviorally
+different successful elites. It saves deterministic, full-episode videos and
+a `manifest.csv` containing stored and fresh rollout metrics. Override
+`NUM_POLICIES`, `EPISODES_PER_POLICY`, `MIN_SUCCESS_RATE`, `VIDEO_WIDTH`,
+`VIDEO_HEIGHT`, or `FRAME_STRIDE` through environment variables. Rendering is
+offscreen and does not require a visible viewer; on a headless Linux node, set
+`MUJOCO_GL=egl` if the node's graphics stack requires an explicit backend.
 
 ### Transition and reset semantics
 
