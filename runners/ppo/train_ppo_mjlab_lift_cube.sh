@@ -14,7 +14,7 @@ python -m ppga.RL.train_ppo \
   --mjlab_fixed_goal=False \
   --mjlab_disable_curriculum=True \
   --mjlab_command_resampling_time=40.0 \
-  --mjlab_descriptor_mode=height_approach \
+  --mjlab_descriptor_mode=motion_effort \
   --num_dims=2 \
   --seed="$SEED" \
   --rollout_length=24 \

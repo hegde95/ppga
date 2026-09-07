@@ -33,19 +33,73 @@ def _raw_observation_term(env, term_name: str) -> torch.Tensor:
     return term_cfg.func(env, **term_cfg.params)
 
 
-def lift_cube_measures(env, mode: str = "height_approach") -> torch.Tensor:
+def _motion_effort_parameters(env, speed_reference=None):
+    """Resolve YAM arm joints and physical normalization constants."""
+    robot = env.scene["robot"]
+    arm_joint_ids, arm_joint_names = robot.find_joints(r"joint[1-6]")
+    if len(arm_joint_ids) != 6:
+        raise ValueError(
+            "motion_effort descriptors require YAM arm joints joint1..joint6; "
+            f"found {arm_joint_names}")
+
+    if speed_reference is None:
+        velocity_penalty = env.reward_manager.get_term_cfg("joint_vel_hinge")
+        speed_reference = float(velocity_penalty.params["max_vel"])
+    speed_reference = float(speed_reference)
+    if speed_reference <= 0:
+        raise ValueError("mjlab_motion_speed_reference must be positive")
+
+    effort_by_joint = {}
+    for actuator in robot.actuators:
+        effort_limit = getattr(actuator.cfg, "effort_limit", None)
+        if effort_limit is None:
+            continue
+        for joint_id in actuator.target_ids.tolist():
+            effort_by_joint[int(joint_id)] = float(effort_limit)
+    missing = [
+        name for joint_id, name in zip(arm_joint_ids, arm_joint_names)
+        if joint_id not in effort_by_joint
+    ]
+    if missing:
+        raise ValueError(
+            f"No actuator effort limits available for arm joints {missing}")
+    effort_limits = torch.tensor(
+        [effort_by_joint[joint_id] for joint_id in arm_joint_ids],
+        dtype=torch.float32,
+        device=robot.data.joint_vel.device)
+    return arm_joint_ids, speed_reference, effort_limits
+
+
+def lift_cube_measures(env, mode: str = "motion_effort", *,
+                       arm_joint_ids=None, speed_reference=None,
+                       effort_limits=None) -> torch.Tensor:
     """Return dense manipulation descriptors in ``[0, 1]``.
 
-    ``height_approach`` separates task progress (normalized cube height) from
-    behavior (which lateral side of the cube the end effector approaches).
+    ``motion_effort`` captures manipulation style using normalized arm-joint
+    speed and actuator effort. ``height_approach`` separates task progress
+    (normalized cube height) from behavior (which lateral side of the cube the
+    end effector approaches).
     ``progress`` preserves the original reaching / goal-proximity measures for
     loading or reproducing older archives.
     """
-    ee_to_cube = _raw_observation_term(env, "ee_to_cube").norm(dim=-1)
-    cube_to_goal = _raw_observation_term(env, "cube_to_goal").norm(dim=-1)
-    reaching = torch.exp(-ee_to_cube / 0.20)
-    bringing = torch.exp(-cube_to_goal / 0.30)
+    if mode == "motion_effort":
+        if (arm_joint_ids is None or speed_reference is None
+                or effort_limits is None):
+            arm_joint_ids, speed_reference, effort_limits = (
+                _motion_effort_parameters(env, speed_reference))
+        robot = env.scene["robot"]
+        joint_speed = robot.data.joint_vel[:, arm_joint_ids].abs()
+        actuator_effort = robot.data.qfrc_actuator[:, arm_joint_ids].abs()
+        motion = (joint_speed / float(speed_reference)).mean(dim=-1)
+        effort = (actuator_effort / effort_limits).mean(dim=-1)
+        return torch.stack((motion.clamp(0.0, 1.0),
+                            effort.clamp(0.0, 1.0)), dim=-1).to(torch.float32)
+
     if mode == "progress":
+        ee_to_cube = _raw_observation_term(env, "ee_to_cube").norm(dim=-1)
+        cube_to_goal = _raw_observation_term(env, "cube_to_goal").norm(dim=-1)
+        reaching = torch.exp(-ee_to_cube / 0.20)
+        bringing = torch.exp(-cube_to_goal / 0.30)
         return torch.stack((reaching, bringing), dim=-1).to(torch.float32)
     if mode != "height_approach":
         raise ValueError(f"Unknown MJLab descriptor mode: {mode!r}")
@@ -74,7 +128,8 @@ class QDRewardMJLab:
     """
 
     def __init__(self, env, measure_reward_scale=None,
-                 descriptor_mode="height_approach"):
+                 descriptor_mode="motion_effort",
+                 motion_speed_reference=None):
         self.env = env
         if env.cfg.auto_reset:
             raise ValueError("QDRewardMJLab requires env.cfg.auto_reset=False")
@@ -93,6 +148,13 @@ class QDRewardMJLab:
             float(measure_reward_scale) if measure_reward_scale is not None
             else float(env.step_dt))
         self.descriptor_mode = descriptor_mode
+        self.arm_joint_ids = None
+        self.motion_speed_reference = None
+        self.arm_effort_limits = None
+        if descriptor_mode == "motion_effort":
+            (self.arm_joint_ids, self.motion_speed_reference,
+             self.arm_effort_limits) = _motion_effort_parameters(
+                 env, motion_speed_reference)
 
     @property
     def unwrapped(self):
@@ -114,7 +176,12 @@ class QDRewardMJLab:
             info["log"] = dict(info["log"])
         done = (terminated | truncated).reshape(-1)
         final_policy_obs = policy_observation(terminal_obs).clone()
-        measures = lift_cube_measures(self.env, self.descriptor_mode)
+        measures = lift_cube_measures(
+            self.env,
+            self.descriptor_mode,
+            arm_joint_ids=self.arm_joint_ids,
+            speed_reference=self.motion_speed_reference,
+            effort_limits=self.arm_effort_limits)
         command = self.env.command_manager.get_term("lift_height")
         task_metrics = {
             name: value.clone()
@@ -184,8 +251,8 @@ def configure_lift_task(cfg, env_cfg) -> None:
         command_cfg.resampling_time_range = (resampling_time, resampling_time)
 
 
-def make_vec_env_mjlab(cfg):
-    """Create the state-based YAM lift task in a separate MJLab install."""
+def make_base_env_mjlab(cfg):
+    """Create an unwrapped state-based MJLab environment."""
     try:
         import mjlab  # noqa: F401
         # Import the built-in task package explicitly so its registry entries
@@ -205,16 +272,30 @@ def make_vec_env_mjlab(cfg):
     env_cfg.seed = int(getattr(cfg, "seed", 0))
     env_cfg.auto_reset = False
     configure_lift_task(cfg, env_cfg)
+    video_width = getattr(cfg, "video_width", None)
+    video_height = getattr(cfg, "video_height", None)
+    if video_width is not None:
+        env_cfg.viewer.width = int(video_width)
+    if video_height is not None:
+        env_cfg.viewer.height = int(video_height)
 
     device = getattr(cfg, "device", None) or (
         "cuda" if torch.cuda.is_available() else "cpu")
     render_mode = "rgb_array" if getattr(cfg, "capture_video", False) else None
     env = ManagerBasedRlEnv(cfg=env_cfg, device=device,
                             render_mode=render_mode)
+    env.reset(seed=env_cfg.seed)
+    return env
+
+
+def make_vec_env_mjlab(cfg):
+    """Create the state-based YAM lift task in a separate MJLab install."""
+    env = make_base_env_mjlab(cfg)
     env = QDRewardMJLab(
         env,
         measure_reward_scale=getattr(cfg, "measure_reward_scale", None),
         descriptor_mode=getattr(cfg, "mjlab_descriptor_mode",
-                                "height_approach"))
-    env.reset(seed=env_cfg.seed)
+                                "motion_effort"),
+        motion_speed_reference=getattr(
+            cfg, "mjlab_motion_speed_reference", None))
     return env

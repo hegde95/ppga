@@ -1,9 +1,64 @@
 from types import SimpleNamespace
 
 import pytest
+import pandas as pd
 import torch
 
 import ppga.envs.mjlab.mjlab_env as mjlab_env
+from ppga.algorithm.mjlab_archive_utils import (
+    select_representative_elites, success_gated_objectives)
+
+
+def test_motion_effort_descriptors_use_arm_speed_and_effort_limits():
+    robot = SimpleNamespace(data=SimpleNamespace(
+        joint_vel=torch.tensor([[0.5, 0.25], [1.0, 1.0]]),
+        qfrc_actuator=torch.tensor([[5.0, 10.0], [20.0, 40.0]]),
+    ))
+    env = SimpleNamespace(scene={"robot": robot})
+
+    measures = mjlab_env.lift_cube_measures(
+        env,
+        "motion_effort",
+        arm_joint_ids=[0, 1],
+        speed_reference=0.5,
+        effort_limits=torch.tensor([10.0, 20.0]))
+
+    torch.testing.assert_close(
+        measures, torch.tensor([[0.75, 0.5], [1.0, 1.0]]))
+
+
+def test_archive_success_gate_rejects_failed_policies_below_threshold():
+    objectives = torch.tensor([12.0, 30.0, 42.0]).numpy()
+    metadata = [
+        {"episode_success_rate": 0.0},
+        {"episode_success_rate": 0.5},
+        {"episode_success_rate": 1.0},
+    ]
+
+    gated = success_gated_objectives(objectives, metadata, 0.5, 0.0)
+
+    assert gated[0] < 0.0
+    assert gated[1:].tolist() == [30.0, 42.0]
+
+
+def test_video_selection_starts_best_then_spreads_across_descriptors():
+    archive = pd.DataFrame({
+        "objective": [10.0, 20.0, 100.0],
+        "measures_0": [0.0, 0.6, 1.0],
+        "measures_1": [0.0, 0.6, 1.0],
+        "metadata": [
+            {"episode_success_rate": 1.0},
+            {"episode_success_rate": 1.0},
+            {"episode_success_rate": 0.0},
+        ],
+    })
+
+    selected = select_representative_elites(
+        archive, count=2, min_success_rate=0.5)
+
+    assert [index for index, _, _ in selected] == [1, 0]
+    assert [reason for _, _, reason in selected] == [
+        "best_objective", "diverse_01"]
 
 
 def test_height_approach_descriptors_cover_height_and_approach_side(monkeypatch):

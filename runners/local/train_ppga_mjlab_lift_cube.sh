@@ -22,7 +22,7 @@ python -m ppga.algorithm.train_ppga_isaac \
   --mjlab_fixed_goal=False \
   --mjlab_disable_curriculum=True \
   --mjlab_command_resampling_time=40.0 \
-  --mjlab_descriptor_mode=height_approach \
+  --mjlab_descriptor_mode=motion_effort \
   --num_dims=2 \
   --grid_size=25 \
   --seed="$SEED" \
@@ -56,6 +56,7 @@ python -m ppga.algorithm.train_ppga_isaac \
   --move_mean_iters=10 \
   --archive_lr=0.1 \
   --threshold_min=0 \
+  --archive_min_success_rate=0.5 \
   --log_arch_freq=25 \
   --save_scheduler=False \
   --save_heatmaps=True \

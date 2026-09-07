@@ -299,9 +299,12 @@ def parse_args():
     parser.add_argument('--episode_length_s', type=float, default=None,
                         help='Override the simulator episode horizon in seconds')
     parser.add_argument('--mjlab_descriptor_mode',
-                        choices=['height_approach', 'progress'],
-                        default='height_approach',
+                        choices=['motion_effort', 'height_approach', 'progress'],
+                        default='motion_effort',
                         help='MJLab QD descriptor pair')
+    parser.add_argument('--mjlab_motion_speed_reference', type=float,
+                        default=None,
+                        help='Arm-speed normalization; defaults to the task velocity threshold')
     parser.add_argument('--mjlab_fixed_goal',
                         type=lambda x: bool(strtobool(x)),
                         default=False,

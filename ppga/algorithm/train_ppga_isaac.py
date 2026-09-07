@@ -15,6 +15,7 @@ from ribs.schedulers import Scheduler
 from ppga.envs.factory import make_vec_env, reward_offset
 from ppga.envs.qd_env import policy_observation_space
 from ppga.models.actor_critic import Actor
+from ppga.algorithm.mjlab_archive_utils import success_gated_objectives
 from ppga.qd.archives import GridArchive
 from ppga.qd.emitters import PPGAEmitter
 from ppga.RL.ppo import PPO
@@ -208,9 +209,12 @@ def parse_args():
     parser.add_argument('--episode_length_s', type=float, default=None,
                         help='Override the simulator episode horizon in seconds')
     parser.add_argument('--mjlab_descriptor_mode',
-                        choices=['height_approach', 'progress'],
-                        default='height_approach',
+                        choices=['motion_effort', 'height_approach', 'progress'],
+                        default='motion_effort',
                         help='MJLab QD descriptor pair')
+    parser.add_argument('--mjlab_motion_speed_reference', type=float,
+                        default=None,
+                        help='Arm-speed normalization; defaults to the task velocity threshold')
     parser.add_argument('--mjlab_fixed_goal',
                         type=lambda x: bool(strtobool(x)),
                         default=False,
@@ -336,6 +340,11 @@ def parse_args():
         type=float,
         default=0.0,
         help='Min objective threshold for adding new solutions to the archive')
+    parser.add_argument(
+        '--archive_min_success_rate',
+        type=float,
+        default=0.0,
+        help='Reject policies below this episode success rate from the archive')
     parser.add_argument(
         '--take_archive_snapshots',
         type=lambda x: bool(strtobool(x)),
@@ -677,7 +686,10 @@ def train_ppga(cfg: Box, vec_env):
 
         emitter_loc = tuple(measures[0, :2])
         best = max(best, max(objs))
-        scheduler.tell_dqd(objs, measures, jacobian, metadata=metadata)
+        archive_objs = success_gated_objectives(
+            objs, metadata, cfg.archive_min_success_rate, cfg.threshold_min)
+        scheduler.tell_dqd(
+            archive_objs, measures, jacobian, metadata=metadata)
 
         branched_sols = scheduler.ask()
         branched_agents = [
@@ -710,7 +722,9 @@ def train_ppga(cfg: Box, vec_env):
             objs -= reg_loss
 
         best = max(best, max(objs))
-        scheduler.tell(objs, measures, metadata=metadata)
+        archive_objs = success_gated_objectives(
+            objs, metadata, cfg.archive_min_success_rate, cfg.threshold_min)
+        scheduler.tell(archive_objs, measures, metadata=metadata)
         if scheduler.emitters[0].last_stop_status:
             log.debug('Emitter restarted. Changing the mean agent...')
             mean_agent = Actor(
@@ -850,6 +864,11 @@ def main():
         raise ValueError('adaptive_kl requires target_kl')
     if cfg.initial_action_std <= 0:
         raise ValueError('initial_action_std must be positive')
+    if not 0.0 <= cfg.archive_min_success_rate <= 1.0:
+        raise ValueError('archive_min_success_rate must be in [0, 1]')
+    if (cfg.mjlab_motion_speed_reference is not None
+            and cfg.mjlab_motion_speed_reference <= 0):
+        raise ValueError('mjlab_motion_speed_reference must be positive')
     cfg.num_emitters = 1
     vec_env = make_vec_env(cfg)
     if cfg.action_transform is None:
