@@ -68,30 +68,32 @@ def main():
     cfg.minibatch_size = cfg.batch_size // cfg.num_minibatches
     ppo = PPO(cfg)
 
+    def restore_actor(row):
+        actor = Actor(
+            cfg.obs_shape, cfg.action_shape, cfg.normalize_obs,
+            cfg.normalize_returns, cfg.action_transform,
+            getattr(cfg, 'action_std_parameterization', 'log'),
+            hidden_dims=getattr(cfg, 'actor_hidden_dims',
+                                (400, 200, 100))).deserialize(
+                                    row[solution_columns].to_numpy(
+                                        dtype=np.float32))
+        metadata = row.get('metadata')
+        if isinstance(metadata, dict):
+            if cfg.normalize_obs and 'obs_normalizer' in metadata:
+                actor.obs_normalizer.load_state_dict(
+                    metadata['obs_normalizer'])
+            if (cfg.normalize_returns
+                    and 'return_normalizer' in metadata):
+                actor.return_normalizer.load_state_dict(
+                    metadata['return_normalizer'])
+        return actor
+
     rows = []
     for start in range(0, len(archive), args.policies_per_batch):
         chunk = archive.iloc[start:start + args.policies_per_batch]
-        agents = [
-            Actor(cfg.obs_shape, cfg.action_shape, cfg.normalize_obs,
-                  cfg.normalize_returns, cfg.action_transform,
-                  getattr(cfg, 'action_std_parameterization',
-                          'log'),
-                  hidden_dims=getattr(cfg, 'actor_hidden_dims',
-                                      (400, 200, 100))).deserialize(
-                      row[solution_columns].to_numpy(dtype=np.float32))
-            for _, row in chunk.iterrows()
-        ]
+        agents = [restore_actor(row) for _, row in chunk.iterrows()]
         while len(agents) < args.policies_per_batch:
-            agents.append(
-                Actor(cfg.obs_shape, cfg.action_shape, cfg.normalize_obs,
-                      cfg.normalize_returns,
-                      cfg.action_transform,
-                      getattr(cfg, 'action_std_parameterization',
-                              'log'),
-                      hidden_dims=getattr(cfg, 'actor_hidden_dims',
-                                          (400, 200, 100))).deserialize(
-                          chunk.iloc[-1][solution_columns].to_numpy(
-                              dtype=np.float32)))
+            agents.append(restore_actor(chunk.iloc[-1]))
         vectorized = VectorizedActor(
             agents, Actor, cfg.obs_shape, cfg.action_shape,
             cfg.normalize_obs, cfg.normalize_returns,
