@@ -16,7 +16,8 @@ class VectorizedLinearBlock(nn.Module):
                  weights: torch.Tensor,
                  biases=None,
                  device=None,
-                 dtype=None) -> None:
+                 dtype=None,
+                 use_amp=True) -> None:
         factory_kwargs = {'device': device, 'dtype': dtype}
         super().__init__()
         self.device = torch.device(
@@ -26,12 +27,13 @@ class VectorizedLinearBlock(nn.Module):
         )  # one slice of all the mlps we want to process as a batch
         self.bias = nn.Parameter(biases).to(
             self.device) if biases is not None else None
+        self.use_amp = use_amp
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         obs_per_weight = x.shape[0] // self.weight.shape[0]
         x = torch.reshape(x, (-1, obs_per_weight, x.shape[1]))
         w_t = torch.transpose(self.weight, 1, 2).to(self.device)
-        with autocast(device_type=self.device.type):
+        with autocast(device_type=self.device.type, enabled=self.use_amp):
             y = torch.bmm(x, w_t)
         if self.bias is not None:
             y = torch.transpose(y, 0, 1)
@@ -51,7 +53,8 @@ class VectorizedPolicy(StochasticPolicy, ABC):
                  obs_shape,
                  action_shape,
                  normalize_obs=False,
-                 normalize_returns=False):
+                 normalize_returns=False,
+                 use_amp=True):
         StochasticPolicy.__init__(self,
                                   normalize_obs=normalize_obs,
                                   obs_shape=obs_shape,
@@ -69,7 +72,12 @@ class VectorizedPolicy(StochasticPolicy, ABC):
         self.normalize_returns = normalize_returns
         self.obs_shape = obs_shape
         self.action_shape = action_shape
+        self.use_amp = use_amp
+        self.actor_hidden_dims = getattr(models[0], 'actor_hidden_dims',
+                                         (400, 200, 100))
         self.action_transform = getattr(models[0], 'action_transform', 'none')
+        self.action_std_parameterization = getattr(
+            models[0], 'action_std_parameterization', 'log')
         if any(getattr(model, 'action_transform', 'none') != self.action_transform
                for model in models):
             raise ValueError('All vectorized actors must use the same action transform')
@@ -108,7 +116,8 @@ class VectorizedPolicy(StochasticPolicy, ABC):
             bias_slice = torch.stack(bias_slice)
             nonlinear = all_models_layers[0][i +
                                              1] if i + 1 < num_layers else None
-            block = VectorizedLinearBlock(weights_slice, bias_slice)
+            block = VectorizedLinearBlock(weights_slice, bias_slice,
+                                           use_amp=self.use_amp)
             blocks.append(block)
             if nonlinear is not None:
                 blocks.append(nonlinear)
@@ -118,14 +127,23 @@ class VectorizedPolicy(StochasticPolicy, ABC):
         '''
         Returns a list of models view of the object
         '''
-        models = [
-            self.model_fn(self.obs_shape, self.action_shape, self.normalize_obs,
-                          self.normalize_returns)
-            for _ in range(self.num_models)
-        ]
+        models = []
+        for _ in range(self.num_models):
+            try:
+                model = self.model_fn(
+                    self.obs_shape, self.action_shape, self.normalize_obs,
+                    self.normalize_returns,
+                    action_std_parameterization=self.action_std_parameterization,
+                    hidden_dims=self.actor_hidden_dims)
+            except TypeError:
+                model = self.model_fn(self.obs_shape, self.action_shape,
+                                      self.normalize_obs,
+                                      self.normalize_returns)
+            models.append(model)
         for i, model in enumerate(models):
             if hasattr(model, 'action_transform'):
                 model.action_transform = self.action_transform
+            model.action_std_parameterization = self.action_std_parameterization
             for l, layer in enumerate(self.actor_mean):
                 # layer could be a nonlinearity
                 if not isinstance(layer, VectorizedLinearBlock):
@@ -178,37 +196,40 @@ class VectorizedActor(VectorizedPolicy):
                  obs_shape,
                  action_shape,
                  normalize_obs=False,
-                 normalize_returns=False):
+                 normalize_returns=False,
+                 use_amp=True):
         VectorizedPolicy.__init__(self,
                                   models,
                                   model_fn,
                                   obs_shape,
                                   action_shape,
                                   normalize_obs=normalize_obs,
-                                  normalize_returns=normalize_returns)
+                                  normalize_returns=normalize_returns,
+                                  use_amp=use_amp)
         self.blocks = self._vectorize_layers('actor_mean', models)
         self.actor_mean = nn.Sequential(*self.blocks)
         action_logprobs = [model.actor_logstd for model in models]
         action_logprobs = torch.cat(action_logprobs).to(self.device)
         self.actor_logstd = nn.Parameter(action_logprobs)
 
-    @autocast(device_type='cuda')
     def forward(self, x):
         return self.actor_mean(x)
 
     def get_action(self, obs, action=None, deterministic=False):
-        with autocast(device_type=self.device.type):
+        with autocast(device_type=self.device.type, enabled=self.use_amp):
             action_mean = self.actor_mean(obs)
         # Keep the probability calculation in float32. In particular, the
         # inverse tanh used by PPO to recompute stored action likelihoods is
         # too sensitive near +/-1 for float16 arithmetic.
         action_mean = action_mean.float()
         repeats = obs.shape[0] // self.num_models
-        action_logstd = torch.repeat_interleave(self.actor_logstd,
-                                                repeats,
-                                                dim=0).float()
-        action_logstd = action_logstd.expand_as(action_mean)
-        action_std = torch.exp(action_logstd) # may want to add nan fixes here, on action_mean and action_std
+        action_std_param = torch.repeat_interleave(self.actor_logstd,
+                                                   repeats,
+                                                   dim=0).float()
+        action_std_param = action_std_param.expand_as(action_mean)
+        action_std = (action_std_param.clamp(1e-6, 1e6)
+                      if self.action_std_parameterization == 'direct'
+                      else torch.exp(action_std_param))
         probs = torch.distributions.Normal(action_mean, action_std)
         if action is None:
             raw_action = action_mean if deterministic else probs.sample()

@@ -13,7 +13,7 @@ from torch import Tensor
 from ppga.models.actor_critic import Actor, Critic, QDCritic
 from ppga.models.vectorized import VectorizedActor
 from ppga.envs.qd_env import (FINAL_OBSERVATION, FINAL_OBSERVATION_MASK,
-                              policy_observation)
+                              TASK_METRICS, policy_observation)
 from ppga.utils.utilities import log, save_checkpoint
 
 # based off of the clean-rl implementation
@@ -75,11 +75,25 @@ class PPO:
         self.action_shape = cfg.action_shape
         self.action_transform = getattr(cfg, 'action_transform', 'none')
 
+        # Seed before constructing modules so initial parameters—not only
+        # rollout sampling—are reproducible.
+        random.seed(self.seed)
+        np.random.seed(self.seed)
+        torch.manual_seed(self.seed)
+        torch.backends.cudnn.deterministic = cfg.torch_deterministic
+
         agent = Actor(self.obs_shape,
                       self.action_shape,
                       normalize_obs=cfg.normalize_obs,
                       normalize_returns=cfg.normalize_returns,
-                      action_transform=self.action_transform).to(self.device)
+                      action_transform=self.action_transform,
+                      action_std_parameterization=getattr(
+                          cfg, 'action_std_parameterization', 'log'),
+                      initial_action_std=getattr(
+                          cfg, 'initial_action_std', 1.0),
+                      hidden_dims=getattr(
+                          cfg, 'actor_hidden_dims', (400, 200, 100))).to(
+                              self.device)
         self._agents = [agent]
         critic = QDCritic(self.obs_shape,
                           measure_dim=cfg.num_dims).to(self.device)
@@ -90,7 +104,8 @@ class PPO:
             obs_shape=self.obs_shape,
             action_shape=self.action_shape,
             normalize_obs=cfg.normalize_obs,
-            normalize_returns=cfg.normalize_returns).to(self.device)
+            normalize_returns=cfg.normalize_returns,
+            use_amp=getattr(cfg, 'mixed_precision', True)).to(self.device)
         self.vec_optimizer = torch.optim.Adam(self.vec_inference.parameters(),
                                               lr=cfg.learning_rate,
                                               eps=1e-5)
@@ -113,13 +128,6 @@ class PPO:
         self.num_intervals = 0
         self.total_rewards = torch.zeros(self.num_envs)
         self.ep_len = torch.zeros(self.num_envs)
-
-        # seeding
-        random.seed(self.seed)
-        np.random.seed(self.seed)
-        torch.manual_seed(self.seed)
-        # noinspection PyUnresolvedReferences
-        torch.backends.cudnn.deterministic = cfg.torch_deterministic
 
         # initialize tensors for training
         self.obs = torch.zeros((cfg.rollout_length, self.num_envs) +
@@ -170,7 +178,9 @@ class PPO:
         self.vec_inference = VectorizedActor(self._agents, Actor,
                                              self.obs_shape, self.action_shape,
                                              self.cfg.normalize_obs,
-                                             self.cfg.normalize_returns)
+                                             self.cfg.normalize_returns,
+                                             getattr(self.cfg,
+                                                     'mixed_precision', True))
         self.vec_optimizer = torch.optim.Adam(self.vec_inference.parameters(),
                                               lr=self.cfg.learning_rate,
                                               eps=1e-5)
@@ -361,9 +371,14 @@ class PPO:
             batch_size = b_obs.shape[1]
             minibatch_size = batch_size // self.cfg.num_minibatches
 
+            if (self.cfg.norm_adv
+                    and not getattr(self.cfg, 'norm_adv_per_minibatch', True)):
+                b_advantages = (
+                    b_advantages - b_advantages.mean(dim=1, keepdim=True)
+                ) / (b_advantages.std(dim=1, keepdim=True) + 1e-8)
+
             obs_dim, action_dim = self.obs_shape[0], self.action_shape[0]
 
-            b_inds = torch.arange(batch_size)
             clipfracs = []
             actor_grad_norms = []
             critic_grad_norms = []
@@ -371,6 +386,7 @@ class PPO:
             pg_loss = v_loss = entropy_loss = ratio = None
 
         for epoch in range(self.cfg.update_epochs):
+            b_inds = torch.randperm(batch_size)
             for start in range(0, batch_size, minibatch_size):
                 end = start + minibatch_size
                 mb_inds = b_inds[start:end]
@@ -406,8 +422,28 @@ class PPO:
                     clipfracs += [((ratio - 1.0).abs()
                                    > self.cfg.clip_coef).float().mean().item()]
 
+                    # Match the adaptive schedule used by MJLab's RSL-RL PPO.
+                    # An epoch-level stop alone cannot prevent early
+                    # minibatches at a fixed 1e-3 rate from overshooting.
+                    if (getattr(self.cfg, 'adaptive_kl', False)
+                            and self.cfg.target_kl is not None):
+                        current_lr = self.vec_optimizer.param_groups[0]['lr']
+                        if approx_kl > self.cfg.target_kl * 2.0:
+                            learning_rate = max(1e-5, current_lr / 1.5)
+                        elif (approx_kl < self.cfg.target_kl / 2.0
+                              and approx_kl > 0.0):
+                            learning_rate = min(1e-2, current_lr * 1.5)
+                        else:
+                            learning_rate = current_lr
+                        for optimizer in (self.vec_optimizer,
+                                          self.qd_critic_optim,
+                                          self.mean_critic_optim):
+                            for param_group in optimizer.param_groups:
+                                param_group['lr'] = learning_rate
+
                 mb_advantages = b_advantages[:, mb_inds].flatten()
-                if self.cfg.norm_adv:
+                if (self.cfg.norm_adv
+                        and getattr(self.cfg, 'norm_adv_per_minibatch', True)):
                     mb_advantages = (mb_advantages - mb_advantages.mean()) / (
                         mb_advantages.std() + 1e-8)
 
@@ -479,8 +515,12 @@ class PPO:
               calculate_dqd_gradients=False,
               move_mean_agent=False,
               negative_measure_gradients=False,
-              reset_env=True):
-        global_step = 0
+              reset_env=True,
+              start_update=0,
+              initial_global_step=0,
+              checkpoint_callback=None,
+              checkpoint_interval=0):
+        global_step = int(initial_global_step)
 
         if calculate_dqd_gradients:
             solution_params = self._agents[0].serialize()
@@ -498,7 +538,12 @@ class PPO:
             agents = [
                 Actor(self.obs_shape, self.action_shape, self.cfg.normalize_obs,
                       self.cfg.normalize_returns,
-                      self.action_transform).deserialize(params)
+                      self.action_transform,
+                      getattr(self.cfg, 'action_std_parameterization',
+                              'log'),
+                      hidden_dims=getattr(
+                          self.cfg, 'actor_hidden_dims',
+                          (400, 200, 100))).deserialize(params)
                 for params in agent_original_params
             ]
             for agent in agents:
@@ -529,7 +574,7 @@ class PPO:
         self._rollout_state_valid = True
 
         train_start = time.time()
-        for update in range(1, num_updates + 1):
+        for update in range(int(start_update) + 1, num_updates + 1):
             if self.cfg.anneal_lr:
                 frac = 1.0 - (update - 1.0) / max(num_updates, 1)
                 learning_rate = frac * self.cfg.learning_rate
@@ -545,6 +590,10 @@ class PPO:
             measure_samples = 0
             reward_term_sums = {}
             termination_counts = {}
+            task_metric_sums = {}
+            task_metric_maxima = {}
+            task_metric_minima = {}
+            task_metric_samples = {}
             with torch.no_grad():
                 for step in range(rollout_length):
                     global_step += self.num_envs
@@ -557,7 +606,8 @@ class PPO:
                     action = action.to(torch.float32)
                     raw_action = self.vec_inference.last_raw_action
                     raw_out_of_bounds += (raw_action.abs() > 1.0).sum().item()
-                    saturated_actions += (action.abs() > 0.99).sum().item()
+                    if self.action_transform in {'clip', 'tanh'}:
+                        saturated_actions += (action.abs() > 0.99).sum().item()
                     action_elements += action.numel()
                     if calculate_dqd_gradients:
                         next_obs = self.next_obs.reshape(
@@ -593,6 +643,9 @@ class PPO:
                     if FINAL_OBSERVATION in infos:
                         final_obs = self._policy_obs(
                             infos[FINAL_OBSERVATION]).to(self.device)
+                        if self.cfg.normalize_obs:
+                            final_obs = self.vec_inference.vec_normalize_obs(
+                                final_obs, update=False)
                         if final_obs.shape != self.final_observations[step].shape:
                             raise ValueError(
                                 "Backend final observation has shape "
@@ -615,6 +668,22 @@ class PPO:
                     for name, values in infos.get('termination_terms', {}).items():
                         values = values.to(dones.device).bool() & dones.bool()
                         termination_counts[name] = termination_counts.get(name, 0) + values.sum().item()
+                    for name, values in infos.get(TASK_METRICS, {}).items():
+                        values = values.detach()
+                        task_metric_sums[name] = (
+                            task_metric_sums.get(name, 0.0)
+                            + values.sum().item())
+                        task_metric_samples[name] = (
+                            task_metric_samples.get(name, 0)
+                            + values.numel())
+                        current_max = values.max().item()
+                        task_metric_maxima[name] = max(
+                            task_metric_maxima.get(name, -float('inf')),
+                            current_max)
+                        current_min = values.min().item()
+                        task_metric_minima[name] = min(
+                            task_metric_minima.get(name, float('inf')),
+                            current_min)
                     if move_mean_agent:
                         rew_measures = torch.cat(
                             (reward.unsqueeze(1), measure_rewards), dim=1)
@@ -707,8 +776,12 @@ class PPO:
                 explained_var = np.nan if var_y == 0 else 1 - np.var(
                     y_true - y_pred) / var_y
 
-                avg_log_stddev = self.vec_inference.actor_logstd.mean().detach(
-                ).cpu().numpy()
+                std_param = self.vec_inference.actor_logstd
+                if self.vec_inference.action_std_parameterization == 'direct':
+                    avg_log_stddev = torch.log(
+                        std_param.clamp(1e-6, 1e6)).mean().detach().cpu().numpy()
+                else:
+                    avg_log_stddev = std_param.mean().detach().cpu().numpy()
                 avg_obj_magnitude = self.rewards.mean()
                 branch_adv_std = advantages.transpose(0, 1).reshape(
                     num_agents, -1).std(dim=1)
@@ -718,16 +791,31 @@ class PPO:
                 fps = global_step / train_elapse
                 if not calculate_dqd_gradients and not move_mean_agent:  # backwards compatibility for standard PPO
                     if update % self._report_interval == 0:
+                        episodic_reward = (
+                            np.mean(self.episodic_returns)
+                            if self.episodic_returns else np.nan)
+                        reward_terms = ', '.join(
+                            f'reward_{name}={value / rollout_length:.3f}'
+                            for name, value in reward_term_sums.items())
                         log.debug(
                             f'FPS={fps:.2f}, steps={global_step}, '
-                            f'episodic_reward={np.mean(self.episodic_returns):.3f}, '
+                            f'episodic_reward={episodic_reward:.3f}, '
+                            f'task_success={task_metric_sums.get("episode_success", 0.0) / max(task_metric_samples.get("episode_success", 0), 1):.3f}, '
+                            f'object_height_max={task_metric_maxima.get("object_height", np.nan):.3f}, '
+                            f'position_error_min={task_metric_minima.get("position_error", np.nan):.3f}, '
+                            f'avg_logstd={float(avg_log_stddev):.3f}, '
+                            f'learning_rate={self.vec_optimizer.param_groups[0]["lr"]:.2e}, '
+                            f'approx_kl={approx_kl.item():.5f}, '
+                            f'entropy={entropy_loss.item():.3f}, '
                             f'raw_action_oob={raw_out_of_bounds / max(action_elements, 1):.3f}, '
                             f'action_saturation={saturated_actions / max(action_elements, 1):.3f}'
+                            + (f', {reward_terms}' if reward_terms else '')
                         )
 
                 if self.cfg.use_wandb:
                     diagnostics = {
                         "charts/actor_avg_logstd": avg_log_stddev,
+                        "charts/learning_rate": self.vec_optimizer.param_groups[0]["lr"],
                         "charts/average_rew_magnitude": avg_obj_magnitude,
                         f"losses/{move_mean_agent=}/value_loss": v_loss.item(),
                         "losses/value_loss": v_loss.item(),
@@ -771,6 +859,11 @@ class PPO:
                         diagnostics[f"reward_terms/{name}"] = value / rollout_length
                     for name, value in termination_counts.items():
                         diagnostics[f"terminations/{name}"] = value
+                    for name, value in task_metric_sums.items():
+                        diagnostics[f"task/{name}_mean"] = (
+                            value / max(task_metric_samples[name], 1))
+                        diagnostics[f"task/{name}_max"] = task_metric_maxima[name]
+                        diagnostics[f"task/{name}_min"] = task_metric_minima[name]
                     wandb.log(diagnostics)
 
                     if len(self.episodic_returns):
@@ -811,6 +904,10 @@ class PPO:
                                 mean.mean().item(),
                         })
 
+            if (checkpoint_callback is not None and checkpoint_interval > 0
+                    and update % checkpoint_interval == 0):
+                checkpoint_callback(self, update, global_step)
+
         train_elapse = time.time() - train_start
         log.debug(f'train() took {train_elapse:.2f} seconds to complete')
         fps = global_step / train_elapse
@@ -839,14 +936,22 @@ class PPO:
             original_agent = [
                 Actor(self.obs_shape, self.action_shape, self.cfg.normalize_obs,
                       self.cfg.normalize_returns,
-                      self.action_transform).deserialize(
+                      self.action_transform,
+                      getattr(self.cfg, 'action_std_parameterization',
+                              'log'),
+                      hidden_dims=getattr(
+                          self.cfg, 'actor_hidden_dims',
+                          (400, 200, 100))).deserialize(
                           agent_original_params[0]).to(self.device)
             ]
             self.vec_inference = VectorizedActor(original_agent, Actor,
                                                  self.obs_shape,
                                                  self.action_shape,
                                                  self.cfg.normalize_obs,
-                                                 self.cfg.normalize_returns)
+                                                 self.cfg.normalize_returns,
+                                                 getattr(self.cfg,
+                                                         'mixed_precision',
+                                                         True))
             f, m, metadata = self.evaluate(
                 self.vec_inference,
                 vec_env=vec_env,
@@ -891,14 +996,21 @@ class PPO:
             (num_steps, num_envs, self.cfg.num_dims), device=self.device)
         measures = torch.zeros(
             (num_envs, self.cfg.num_dims), device=self.device)
+        task_metric_extrema = {}
 
+        fixed_obs_stats = None
         if self.cfg.normalize_obs and obs_normalizer is not None:
-            mean, var = obs_normalizer.obs_rms.mean, obs_normalizer.obs_rms.var
+            fixed_obs_stats = (obs_normalizer.obs_rms.mean,
+                               obs_normalizer.obs_rms.var)
 
         while not torch.all(dones) and traj_length < num_steps:
             with torch.no_grad():
                 if self.cfg.normalize_obs:
-                    obs = (obs - mean) / (torch.sqrt(var) + 1e-8)
+                    if fixed_obs_stats is not None:
+                        mean, var = fixed_obs_stats
+                        obs = (obs - mean) / (torch.sqrt(var) + 1e-8)
+                    else:
+                        obs = vec_agent.vec_normalize_obs(obs, update=False)
                 acts, _, _ = vec_agent.get_action(
                     obs, deterministic=deterministic)
                 acts = acts.to(torch.float32)
@@ -909,6 +1021,19 @@ class PPO:
                 infos = env_returns[4]
 
                 measures_acc[traj_length] = infos['measures']
+                active = (~dones).to(self.device)
+                for name, values in infos.get(TASK_METRICS, {}).items():
+                    values = values.to(self.device).reshape(-1)
+                    if name == 'position_error':
+                        initial = torch.full_like(values, float('inf'))
+                        previous = task_metric_extrema.setdefault(name, initial)
+                        task_metric_extrema[name] = torch.where(
+                            active, torch.minimum(previous, values), previous)
+                    else:
+                        initial = torch.full_like(values, -float('inf'))
+                        previous = task_metric_extrema.setdefault(name, initial)
+                        task_metric_extrema[name] = torch.where(
+                            active, torch.maximum(previous, values), previous)
                 obs = obs.to(self.device)
                 total_reward += rew.detach().cpu().numpy(
                 ) * ~dones.cpu().numpy()
@@ -939,8 +1064,20 @@ class PPO:
         avg_traj_lengths = traj_lengths.to(torch.float32).reshape((vec_agent.num_models, num_envs // vec_agent.num_models)).\
             mean(dim=1).cpu().numpy()
         metadata = np.array([{
-            'traj_length': t
+            'traj_length': float(t)
         } for t in avg_traj_lengths]).reshape(-1,)
+        for name, per_env_values in task_metric_extrema.items():
+            per_policy = per_env_values.reshape(
+                vec_agent.num_models, num_envs // vec_agent.num_models)
+            per_policy_mean = per_policy.mean(dim=1).detach().cpu().numpy()
+            metadata_name = {
+                'at_goal': 'success_rate',
+                'episode_success': 'episode_success_rate',
+                'object_height': 'max_object_height',
+                'position_error': 'min_position_error',
+            }.get(name, name)
+            for i, value in enumerate(per_policy_mean):
+                metadata[i][metadata_name] = float(value)
         max_reward = np.max(total_reward)
         min_reward = np.min(total_reward)
         mean_reward = np.mean(total_reward)
@@ -951,13 +1088,18 @@ class PPO:
 
         if self.cfg.normalize_obs:
             for i, data in enumerate(metadata):
+                normalizer = (obs_normalizer if obs_normalizer is not None
+                              else vec_agent.obs_normalizers[i])
                 data['obs_normalizer'] = copy.deepcopy(
-                    obs_normalizer.state_dict())
+                    normalizer.state_dict())
 
         if self.cfg.normalize_returns:
             for i, data in enumerate(metadata):
+                normalizer = (return_normalizer
+                              if return_normalizer is not None else
+                              vec_agent.rew_normalizers[i])
                 data['return_normalizer'] = copy.deepcopy(
-                    return_normalizer.state_dict())
+                    normalizer.state_dict())
 
         if verbose:
             np.set_printoptions(suppress=True)
@@ -968,6 +1110,20 @@ class PPO:
             log.info(f'Min Reward on eval: {min_reward}')
             log.info(f'Mean Reward across all agents: {mean_reward}')
             log.info(f'Average Trajectory Length: {mean_traj_length}')
+            if len(metadata) and 'episode_success_rate' in metadata[0]:
+                success_rates = np.array([
+                    data['episode_success_rate'] for data in metadata
+                ])
+                log.info(
+                    f'Task success rate: mean={success_rates.mean():.4f}, '
+                    f'max={success_rates.max():.4f}')
+            if len(metadata) and 'max_object_height' in metadata[0]:
+                heights = np.array([
+                    data['max_object_height'] for data in metadata
+                ])
+                log.info(
+                    f'Max object height: mean={heights.mean():.4f}, '
+                    f'max={heights.max():.4f}')
 
         return total_reward.reshape(-1,), measures.reshape(
             -1, self.cfg.num_dims), metadata

@@ -20,28 +20,37 @@ class Actor(StochasticPolicy):
                  action_shape: np.ndarray,
                  normalize_obs: bool = False,
                  normalize_returns: bool = False,
-                 action_transform: str = "none"):
+                 action_transform: str = "none",
+                 action_std_parameterization: str = "log",
+                 initial_action_std: float = 1.0,
+                 hidden_dims=(400, 200, 100)):
         StochasticPolicy.__init__(self,
                                   normalize_obs=normalize_obs,
                                   obs_shape=obs_shape,
                                   normalize_returns=normalize_returns)
 
-        self.actor_mean = nn.Sequential(
-            # layer_init(nn.Linear(np.array(obs_shape).prod(), 128)),
-            # nn.Tanh(),
-            # layer_init(nn.Linear(128, 128)),
-            # nn.Tanh(),
-            # layer_init(nn.Linear(128, np.prod(action_shape)), std=0.01),
-            layer_init(nn.Linear(np.array(obs_shape).prod(), 400)),
-            nn.ELU(),
-            layer_init(nn.Linear(400, 200)),
-            nn.ELU(),
-            layer_init(nn.Linear(200, 100)),
-            nn.ELU(),
-            layer_init(nn.Linear(100, np.prod(action_shape)), std=0.01),
-        )
+        self.actor_hidden_dims = tuple(int(dim) for dim in hidden_dims)
+        layers = []
+        input_dim = int(np.array(obs_shape).prod())
+        for hidden_dim in self.actor_hidden_dims:
+            layers.extend((layer_init(nn.Linear(input_dim, hidden_dim)),
+                           nn.ELU()))
+            input_dim = hidden_dim
+        layers.append(
+            layer_init(nn.Linear(input_dim, np.prod(action_shape)), std=0.01))
+        self.actor_mean = nn.Sequential(*layers)
 
-        self.actor_logstd = nn.Parameter(torch.zeros(1, np.prod(action_shape)))
+        if action_std_parameterization not in {"log", "direct"}:
+            raise ValueError(
+                "action_std_parameterization must be 'log' or 'direct'")
+        self.action_std_parameterization = action_std_parameterization
+        if initial_action_std <= 0:
+            raise ValueError("initial_action_std must be positive")
+        initial_value = (float(initial_action_std)
+                         if action_std_parameterization == "direct" else
+                         float(np.log(initial_action_std)))
+        self.actor_logstd = nn.Parameter(
+            torch.full((1, np.prod(action_shape)), initial_value))
         if action_transform not in {"none", "clip", "tanh"}:
             raise ValueError(f"Unknown action transform: {action_transform}")
         self.action_transform = action_transform
@@ -55,8 +64,10 @@ class Actor(StochasticPolicy):
         """Samples an action (instead of just taking the mean) and returns
         corresponding info for the sample (logprob and entropy)."""
         action_mean = self.actor_mean(obs)
-        action_logstd = self.actor_logstd.expand_as(action_mean)
-        action_std = torch.exp(action_logstd)
+        action_std_param = self.actor_logstd.expand_as(action_mean)
+        action_std = (action_std_param.clamp(1e-6, 1e6)
+                      if self.action_std_parameterization == "direct"
+                      else torch.exp(action_std_param))
         probs = torch.distributions.Normal(action_mean, action_std)
         if action is None:
             raw_action = action_mean if deterministic else probs.sample()
@@ -93,8 +104,10 @@ class Actor(StochasticPolicy):
         are any backwards compatibility issues.
         """
         action_mean = self.actor_mean(obs)
-        action_logstd = self.actor_logstd.reshape(action_mean.shape)
-        action_std = torch.exp(action_logstd)
+        action_std_param = self.actor_logstd.reshape(action_mean.shape)
+        action_std = (action_std_param.clamp(1e-6, 1e6)
+                      if self.action_std_parameterization == "direct"
+                      else torch.exp(action_std_param))
         probs = torch.distributions.Normal(action_mean, action_std)
         if action is None:
             action = probs.sample()
