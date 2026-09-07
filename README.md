@@ -108,24 +108,93 @@ python -m pip install -r requirements-mjlab.txt
 Run a small PPO smoke test:
 
 ```bash
-python -m ppga.RL.train_ppo --env_name=lift_cube --env_type=mjlab --env_batch_size=256 --rollout_length=32 --total_timesteps=262144 --num_minibatches=4 --update_epochs=5 --num_dims=2 --value_bootstrap=True
+python -m ppga.RL.train_ppo --env_name=lift_cube --env_type=mjlab --env_batch_size=256 --rollout_length=24 --total_timesteps=262144 --num_minibatches=4 --update_epochs=5 --learning_rate=0.001 --entropy_coef=0.005 --target_kl=0.01 --adaptive_kl=True --norm_adv_per_minibatch=False --mixed_precision=False --normalize_obs=True --action_transform=none --action_std_parameterization=direct --initial_action_std=0.5 --actor_hidden_dims 512 256 128 --num_dims=2 --value_bootstrap=True --mjlab_fixed_goal=False --mjlab_disable_curriculum=True --mjlab_command_resampling_time=40 --mjlab_descriptor_mode=height_approach
 ```
 
-Run the full local PPGA preset or submit the Slurm preset:
+To verify the installed simulator and task independently of PPGA's PPO, run
+MJLab's native RSL-RL baseline with its original dynamic commands and
+curriculum:
 
 ```bash
-bash runners/local/train_ppga_mjlab_lift_cube.sh
-sbatch runners/slurm/train_ppga_mjlab_lift_cube_slurm.sh
+MAX_ITERATIONS=1000 ENV_BATCH_SIZE=768 bash runners/ppo/train_mjlab_reference_lift_cube.sh
 ```
 
-As with Isaac Lab, lower the runner's environment count and iteration count for
-local validation, and adapt the Slurm resource and environment settings to the
-target cluster.
+Two additional controls keep commands fixed within each episode. The
+episodic control randomizes the cube and goal on reset; the fixed-goal control
+always uses `[0.4, 0.0, 0.3]` and is intentionally retained as a harder
+diagnostic:
 
-The MJLab backend uses two dense descriptors in `[0, 1]`: average end-effector
-proximity to the cube and average cube proximity to its commanded goal. The
-adapter disables MJLab auto-reset, records the true terminal observation and
-descriptors, then partially resets only completed environments.
+```bash
+MAX_ITERATIONS=700 ENV_BATCH_SIZE=768 bash runners/ppo/train_mjlab_reference_episodic_lift_cube.sh
+MAX_ITERATIONS=1000 ENV_BATCH_SIZE=768 bash runners/ppo/train_mjlab_reference_stationary_lift_cube.sh
+```
+
+The custom episodic PPO runner is retained as a diagnostic baseline. Require
+`evaluation.json` to report nonzero `episode_success_rate` and meaningful
+`max_object_height` before using one of its checkpoints to seed QD. In current
+validation, the native RSL-RL trainer below was the more reliable bootstrap
+path. The custom runner writes `final_model.pt`, `evaluation.json`, and `cfg.json` under
+`experiments/ppo_mjlab_episodic_lift_cube/<seed>/`. It uses MJLab's unbounded
+action convention, direct standard-deviation parameterization, observation
+normalization, full-precision inference, shuffled minibatches, rollout-wide
+advantage normalization, and adaptive KL scheduling.
+
+```bash
+bash runners/ppo/train_ppo_mjlab_lift_cube.sh
+sbatch runners/slurm/train_ppo_mjlab_lift_cube_slurm.sh
+```
+
+Resumable checkpoints are written every 100 PPO updates and the newest three
+are retained. Resume an interrupted run by repeating the same configuration
+with `--resume_checkpoint=<checkpoint path>`; `TOTAL_TIMESTEPS` remains the
+overall target rather than an additional step count. Console diagnostics show
+the individual reward terms, maximum cube height, minimum goal error, success,
+policy log-standard-deviation, entropy, and KL.
+
+The native trainer is the preferred bootstrap path. Convert a successful
+RSL-RL checkpoint; the converter copies its MLP, per-joint standard deviations,
+and observation-normalization statistics:
+
+```bash
+python -m ppga.RL.convert_mjlab_rsl_checkpoint /path/to/model_999.pt /path/to/ppga_actor_model_999.pt
+INITIAL_ACTOR_CHECKPOINT=/path/to/ppga_actor_model_999.pt bash runners/local/train_ppga_mjlab_lift_cube.sh
+sbatch --export=ALL,INITIAL_ACTOR_CHECKPOINT=/path/to/ppga_actor_model_999.pt runners/slurm/train_ppga_mjlab_lift_cube_slurm.sh
+```
+
+The PPGA runner also works without `INITIAL_ACTOR_CHECKPOINT` for a random
+initial mean. Both runners accept environment overrides such as `SEED=43`,
+`ENV_BATCH_SIZE=384`, `TOTAL_TIMESTEPS=1000000`, `POPSIZE=32`, `SIGMA0=0.05`,
+and `TOTAL_ITERATIONS=10`. For a seed sweep, submit the same runner with
+different `SEED` values. Adapt the Slurm resource, module, and Conda settings
+to the target cluster.
+
+The recommended MJLab preset randomizes the cube and goal once per episode,
+disables the reward curriculum, and makes the command-resampling interval
+longer than the episode. This is a stationary task distribution without
+mid-episode cube teleports. A single fixed 30 cm target was empirically prone
+to a reach-only local optimum. Descriptors in `[0, 1]` are normalized cube
+height and the lateral side from which the end effector approaches the cube.
+`--mjlab_descriptor_mode=progress` preserves the older end-effector/cube and
+cube/goal proximity descriptors for explicit legacy comparisons.
+
+Task metrics are logged during PPO and stored in elite metadata. PPGA's
+`summary.csv` includes archive mean/max success rate and maximum object height.
+The default PPGA preset rejects objectives below zero, saves archive-only
+checkpoints every 25 iterations, and saves heatmaps every 10 iterations to
+avoid multi-gigabyte scheduler checkpoints. Set `--save_scheduler=True` only
+when full optimizer/emitter restart state is worth the storage cost.
+
+Reevaluate every policy in a saved archive under the same reset-only episodic
+task distribution with:
+
+```bash
+python -m ppga.algorithm.evaluate_mjlab_archive --archive experiments/ppga_mjlab_episodic_lift_cube/42/checkpoints/cp_00000025/archive_df_00000025.pkl --config experiments/ppga_mjlab_episodic_lift_cube/42/cfg.json --output experiments/ppga_mjlab_episodic_lift_cube/42/archive_reevaluation.csv
+```
+
+The output retains stored objective/descriptors alongside fresh objective,
+descriptors, success rate, maximum object height, and minimum goal-position
+error. The adapter disables MJLab auto-reset, records the true terminal state,
+and partially resets only completed environments.
 
 ### Transition and reset semantics
 
