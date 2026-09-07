@@ -12,6 +12,8 @@ from box import Box
 from ppga.RL.ppo import PPO
 from ppga.envs.factory import make_vec_env
 from ppga.envs.qd_env import policy_observation_space
+from ppga.algorithm.mjlab_archive_utils import (
+    archive_solution_columns, restore_archive_actor)
 from ppga.models.actor_critic import Actor
 from ppga.models.vectorized import VectorizedActor
 
@@ -25,7 +27,7 @@ def parse_args():
     parser.add_argument('--policies_per_batch', type=int, default=32)
     parser.add_argument('--seed', type=int, default=20260907)
     parser.add_argument('--descriptor_mode',
-                        choices=['height_approach', 'progress'],
+                        choices=['motion_effort', 'height_approach', 'progress'],
                         default=None,
                         help='Optional override; defaults to the saved config')
     return parser.parse_args()
@@ -54,12 +56,7 @@ def main():
     archive = pd.read_pickle(args.archive)
     if archive.empty:
         raise ValueError(f'Archive contains no elites: {args.archive}')
-    solution_columns = [
-        column for column in archive.columns if column.startswith('solution_')
-    ]
-    if not solution_columns:
-        raise ValueError(
-            f'Archive has no solution columns: {args.archive}')
+    solution_columns = archive_solution_columns(archive)
     env = make_vec_env(cfg)
     cfg.obs_shape = policy_observation_space(
         env.observation_space).shape[1:]
@@ -68,32 +65,16 @@ def main():
     cfg.minibatch_size = cfg.batch_size // cfg.num_minibatches
     ppo = PPO(cfg)
 
-    def restore_actor(row):
-        actor = Actor(
-            cfg.obs_shape, cfg.action_shape, cfg.normalize_obs,
-            cfg.normalize_returns, cfg.action_transform,
-            getattr(cfg, 'action_std_parameterization', 'log'),
-            hidden_dims=getattr(cfg, 'actor_hidden_dims',
-                                (400, 200, 100))).deserialize(
-                                    row[solution_columns].to_numpy(
-                                        dtype=np.float32))
-        metadata = row.get('metadata')
-        if isinstance(metadata, dict):
-            if cfg.normalize_obs and 'obs_normalizer' in metadata:
-                actor.obs_normalizer.load_state_dict(
-                    metadata['obs_normalizer'])
-            if (cfg.normalize_returns
-                    and 'return_normalizer' in metadata):
-                actor.return_normalizer.load_state_dict(
-                    metadata['return_normalizer'])
-        return actor
-
     rows = []
     for start in range(0, len(archive), args.policies_per_batch):
         chunk = archive.iloc[start:start + args.policies_per_batch]
-        agents = [restore_actor(row) for _, row in chunk.iterrows()]
+        agents = [
+            restore_archive_actor(row, cfg, solution_columns)
+            for _, row in chunk.iterrows()
+        ]
         while len(agents) < args.policies_per_batch:
-            agents.append(restore_actor(chunk.iloc[-1]))
+            agents.append(
+                restore_archive_actor(chunk.iloc[-1], cfg, solution_columns))
         vectorized = VectorizedActor(
             agents, Actor, cfg.obs_shape, cfg.action_shape,
             cfg.normalize_obs, cfg.normalize_returns,
