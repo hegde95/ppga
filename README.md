@@ -189,11 +189,14 @@ checkpoints are saved every 25 iterations and heatmaps every 10 iterations to
 avoid multi-gigabyte scheduler checkpoints. Set `--save_scheduler=True` only
 when full optimizer/emitter restart state is worth the storage cost.
 
-The MJLab runner initializes the XNES gradient-coefficient center at zero and
-uses `SIGMA0=0.05`. This makes the first generation a local search around the
-successful bootstrap policy. The legacy random-center behavior remains the
-default for other runners and can be selected explicitly with
-`--xnes_center_init=random`.
+The MJLab runner initializes the XNES gradient-coefficient center at zero,
+uses `SIGMA0=0.05`, and conservatively moves the learned mean for one PPO
+iteration at `LEARNING_RATE=0.0001`. This makes the search local around the
+successful bootstrap policy instead of immediately erasing its manipulation
+skill. The legacy random-center behavior remains the default for other runners
+and can be selected explicitly with `--xnes_center_init=random`. Override the
+MJLab defaults with `CALC_GRADIENT_ITERS`, `MOVE_MEAN_ITERS`, and
+`LEARNING_RATE` when conducting ablations.
 
 Reevaluate every policy in a saved archive under the same reset-only episodic
 task distribution with:
