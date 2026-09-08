@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import pandas as pd
 import torch
@@ -7,6 +8,20 @@ import torch
 import ppga.envs.mjlab.mjlab_env as mjlab_env
 from ppga.algorithm.mjlab_archive_utils import (
     select_representative_elites, success_gated_objectives)
+from ppga.qd.emitters.opt import XNES
+
+
+def test_xnes_can_initialize_gradient_coefficients_at_zero():
+    optimizer = XNES(
+        solution_dim=3,
+        device='cpu',
+        sigma0=0.05,
+        batch_size=8,
+        seed=42,
+        initial_bounds=([0.0, -2.0, -2.0], [2.0, 2.0, 2.0]),
+        center_init=np.zeros(3, dtype=np.float32))
+
+    np.testing.assert_array_equal(optimizer.mu, np.zeros(3))
 
 
 def test_motion_effort_descriptors_use_arm_speed_and_effort_limits():

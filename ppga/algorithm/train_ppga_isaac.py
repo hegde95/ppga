@@ -317,6 +317,12 @@ def parse_args():
         help=
         'Initial standard deviation parameter for the covariance matrix used in NES methods'
     )
+    parser.add_argument(
+        '--xnes_center_init',
+        choices=['random', 'zero'],
+        default='random',
+        help=('Initialize the XNES gradient-coefficient mean randomly within '
+              'its legacy bounds or explicitly at zero'))
     parser.add_argument('--restart_rule',
                         type=str,
                         choices=['basic', 'no_improvement'])
@@ -503,6 +509,7 @@ def create_scheduler(cfg: Box,
                 use_wandb=cfg.use_wandb,
                 normalize_obs=cfg.normalize_obs,
                 normalize_returns=cfg.normalize_returns,
+                xnes_center_init=cfg.xnes_center_init,
             )
         ]
     else:
@@ -521,6 +528,7 @@ def create_scheduler(cfg: Box,
                 use_wandb=cfg.use_wandb,
                 normalize_obs=cfg.normalize_obs,
                 normalize_returns=cfg.normalize_returns,
+                xnes_center_init=cfg.xnes_center_init,
             )
         ]
 

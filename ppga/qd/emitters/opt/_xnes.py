@@ -14,7 +14,8 @@ class XNES(evotorch.algorithms.XNES):
                  sigma0,
                  batch_size,
                  seed=None,
-                 initial_bounds=None):
+                 initial_bounds=None,
+                 center_init=None):
         self.batch_size = batch_size
         self._rng = np.random.default_rng(seed)
 
@@ -30,6 +31,7 @@ class XNES(evotorch.algorithms.XNES):
             problem,
             stdev_init=sigma0,
             popsize=batch_size,
+            center_init=center_init,
         )
 
         self._first_iter = True

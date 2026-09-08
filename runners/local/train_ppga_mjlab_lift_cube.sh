@@ -6,7 +6,7 @@ SEED="${SEED:-42}"
 ENV_BATCH_SIZE="${ENV_BATCH_SIZE:-768}"
 POPSIZE="${POPSIZE:-64}"
 TOTAL_ITERATIONS="${TOTAL_ITERATIONS:-1000}"
-SIGMA0="${SIGMA0:-0.5}"
+SIGMA0="${SIGMA0:-0.05}"
 USE_WANDB="${USE_WANDB:-False}"
 INITIAL_ACTOR_CHECKPOINT="${INITIAL_ACTOR_CHECKPOINT:-}"
 INITIAL_ACTOR_ARGS=()
@@ -51,6 +51,7 @@ python -m ppga.algorithm.train_ppga_isaac \
   --total_iterations="$TOTAL_ITERATIONS" \
   --dqd_algorithm=cma_maega \
   --sigma0="$SIGMA0" \
+  --xnes_center_init=zero \
   --restart_rule=no_improvement \
   --calc_gradient_iters=10 \
   --move_mean_iters=10 \

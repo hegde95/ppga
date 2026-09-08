@@ -34,7 +34,8 @@ class PPGAEmitter(EmitterBase):
                  grad_opt: str = 'ppo',
                  step_size: Optional[float] = None,
                  normalize_obs: bool = True,
-                 normalize_returns: bool = True):
+                 normalize_returns: bool = True,
+                 xnes_center_init: str = 'random'):
         EmitterBase.__init__(
             self,
             archive,
@@ -77,6 +78,13 @@ class PPGAEmitter(EmitterBase):
         # the objective.
         self._num_coefficients = archive.measure_dim + 1
 
+        if xnes_center_init not in {'random', 'zero'}:
+            raise ValueError(
+                "xnes_center_init must be either 'random' or 'zero'")
+        self._xnes_center_init = xnes_center_init
+        center_init = (np.zeros(self._num_coefficients, dtype=np.float32)
+                       if xnes_center_init == 'zero' else None)
+
         self.device = torch.device(
             'cuda' if torch.cuda.is_available() else 'cpu')
         self._initial_bounds = ([-2.0] * (archive.measure_dim + 1),
@@ -88,7 +96,8 @@ class PPGAEmitter(EmitterBase):
                         sigma0=sigma0,
                         batch_size=batch_size,
                         seed=seed,
-                        initial_bounds=self._initial_bounds)
+                        initial_bounds=self._initial_bounds,
+                        center_init=center_init)
 
         # Indicates if the emitter just restarted.
         #
@@ -352,7 +361,11 @@ class PPGAEmitter(EmitterBase):
                             sigma0=self._sigma0,
                             batch_size=self._batch_size,
                             seed=self._seed_sequence.spawn(1)[0],
-                            initial_bounds=self._initial_bounds)
+                            initial_bounds=self._initial_bounds,
+                            center_init=(
+                                np.zeros(self._num_coefficients,
+                                         dtype=np.float32)
+                                if self._xnes_center_init == 'zero' else None))
 
             self._ranker.reset(self, self.archive)
             self._restarts += 1
