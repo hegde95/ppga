@@ -33,6 +33,118 @@ def _raw_observation_term(env, term_name: str) -> torch.Tensor:
     return term_cfg.func(env, **term_cfg.params)
 
 
+def stable_lift_success(env, command_name="lift_height",
+                        max_object_speed=0.15) -> torch.Tensor:
+    """Return true when the cube is at the goal and no longer moving fast."""
+    command = env.command_manager.get_term(command_name)
+    position_error = torch.linalg.vector_norm(
+        command.target_pos - command.object.data.root_link_pos_w, dim=-1)
+    linear_speed = torch.linalg.vector_norm(
+        command.object.data.root_link_vel_w[:, :3], dim=-1)
+    return ((position_error < float(command.cfg.success_threshold))
+            & (linear_speed <= float(max_object_speed)))
+
+
+def terminal_lift_success_bonus(env, command_name="lift_height",
+                                max_object_speed=0.15) -> torch.Tensor:
+    """Return a dt-neutral indicator for a one-time episodic success bonus."""
+    return stable_lift_success(
+        env, command_name, max_object_speed).to(torch.float32) / env.step_dt
+
+
+class ApproachTransportMeasures:
+    """Track task-relative approach and cube-transport path descriptors."""
+
+    def __init__(self, env, transport_start_distance=0.03,
+                 transport_deviation_reference=0.15):
+        self.env = env
+        self.transport_start_distance = float(transport_start_distance)
+        self.transport_deviation_reference = float(
+            transport_deviation_reference)
+        if self.transport_start_distance <= 0:
+            raise ValueError(
+                "mjlab_transport_start_distance must be positive")
+        if self.transport_deviation_reference <= 0:
+            raise ValueError(
+                "mjlab_transport_deviation_reference must be positive")
+
+        reaching_cfg = env.reward_manager.get_term_cfg("lift")
+        self.reaching_std = float(reaching_cfg.params["reaching_std"])
+        device = env.scene.env_origins.device
+        num_envs = env.num_envs
+        self.initial_object_pos = torch.zeros(num_envs, 3, device=device)
+        self.initial_goal_pos = torch.zeros(num_envs, 3, device=device)
+        self.approach_sum = torch.zeros(num_envs, device=device)
+        self.approach_weight = torch.zeros(num_envs, device=device)
+        self.transport_sum = torch.zeros(num_envs, device=device)
+        self.transport_count = torch.zeros(num_envs, device=device)
+        self.transport_started = torch.zeros(
+            num_envs, dtype=torch.bool, device=device)
+
+    def reset(self, env_ids=None):
+        if env_ids is None:
+            env_ids = torch.arange(
+                self.env.num_envs, device=self.initial_object_pos.device)
+        command = self.env.command_manager.get_term("lift_height")
+        self.initial_object_pos[env_ids] = (
+            command.object.data.root_link_pos_w[env_ids])
+        self.initial_goal_pos[env_ids] = command.target_pos[env_ids]
+        self.approach_sum[env_ids] = 0.0
+        self.approach_weight[env_ids] = 0.0
+        self.transport_sum[env_ids] = 0.0
+        self.transport_count[env_ids] = 0.0
+        self.transport_started[env_ids] = False
+
+    def update(self) -> torch.Tensor:
+        command = self.env.command_manager.get_term("lift_height")
+        object_pos = command.object.data.root_link_pos_w
+        ee_to_cube = _raw_observation_term(self.env, "ee_to_cube")
+        distance = torch.linalg.vector_norm(ee_to_cube, dim=-1)
+        horizontal_distance = torch.linalg.vector_norm(
+            ee_to_cube[:, :2], dim=-1).clamp_min(1e-6)
+        # Base-frame y is the robot's left/right axis. Proximity weighting
+        # emphasizes the final approach rather than the distant initial pose.
+        approach_side = 0.5 * (
+            ee_to_cube[:, 1] / horizontal_distance + 1.0)
+        approach_active = ~self.transport_started
+        proximity = torch.exp(
+            -distance.square() / self.reaching_std**2) * approach_active
+        self.approach_sum += approach_side.clamp(0.0, 1.0) * proximity
+        self.approach_weight += proximity
+
+        object_displacement = torch.linalg.vector_norm(
+            object_pos - self.initial_object_pos, dim=-1)
+        self.transport_started |= (
+            object_displacement >= self.transport_start_distance)
+
+        direct_path = self.initial_goal_pos - self.initial_object_pos
+        path_denominator = direct_path.square().sum(dim=-1).clamp_min(1e-6)
+        progress = ((object_pos - self.initial_object_pos) * direct_path).sum(
+            dim=-1) / path_denominator
+        straight_path_pos = (
+            self.initial_object_pos
+            + progress.clamp(0.0, 1.0).unsqueeze(-1) * direct_path)
+        lateral_deviation = object_pos[:, 1] - straight_path_pos[:, 1]
+        transport_side = 0.5 + lateral_deviation / (
+            2.0 * self.transport_deviation_reference)
+        transport_active = self.transport_started.to(torch.float32)
+        self.transport_sum += transport_side.clamp(0.0, 1.0) * transport_active
+        self.transport_count += transport_active
+        return self.measures()
+
+    def measures(self) -> torch.Tensor:
+        approach = torch.where(
+            self.approach_weight > 0,
+            self.approach_sum / self.approach_weight.clamp_min(1e-6),
+            torch.full_like(self.approach_sum, 0.5))
+        transport = torch.where(
+            self.transport_count > 0,
+            self.transport_sum / self.transport_count.clamp_min(1.0),
+            torch.full_like(self.transport_sum, 0.5))
+        return torch.stack((approach.clamp(0.0, 1.0),
+                            transport.clamp(0.0, 1.0)), dim=-1)
+
+
 def _motion_effort_parameters(env, speed_reference=None):
     """Resolve YAM arm joints and physical normalization constants."""
     robot = env.scene["robot"]
@@ -70,18 +182,22 @@ def _motion_effort_parameters(env, speed_reference=None):
     return arm_joint_ids, speed_reference, effort_limits
 
 
-def lift_cube_measures(env, mode: str = "motion_effort", *,
+def lift_cube_measures(env, mode: str = "approach_transport", *,
                        arm_joint_ids=None, speed_reference=None,
                        effort_limits=None) -> torch.Tensor:
     """Return dense manipulation descriptors in ``[0, 1]``.
 
-    ``motion_effort`` captures manipulation style using normalized arm-joint
-    speed and actuator effort. ``height_approach`` separates task progress
-    (normalized cube height) from behavior (which lateral side of the cube the
-    end effector approaches).
+    ``approach_transport`` is stateful and is handled by
+    :class:`ApproachTransportMeasures`. ``motion_effort`` captures manipulation
+    style using normalized arm-joint speed and actuator effort.
+    ``height_approach`` separates task progress (normalized cube height) from
+    behavior (which lateral side of the cube the end effector approaches).
     ``progress`` preserves the original reaching / goal-proximity measures for
     loading or reproducing older archives.
     """
+    if mode == "approach_transport":
+        raise ValueError(
+            "approach_transport measures require an episode tracker")
     if mode == "motion_effort":
         if (arm_joint_ids is None or speed_reference is None
                 or effort_limits is None):
@@ -128,8 +244,10 @@ class QDRewardMJLab:
     """
 
     def __init__(self, env, measure_reward_scale=None,
-                 descriptor_mode="motion_effort",
-                 motion_speed_reference=None):
+                 descriptor_mode="approach_transport",
+                 motion_speed_reference=None,
+                 transport_start_distance=0.03,
+                 transport_deviation_reference=0.15):
         self.env = env
         if env.cfg.auto_reset:
             raise ValueError("QDRewardMJLab requires env.cfg.auto_reset=False")
@@ -151,10 +269,18 @@ class QDRewardMJLab:
         self.arm_joint_ids = None
         self.motion_speed_reference = None
         self.arm_effort_limits = None
+        self.approach_transport_tracker = None
         if descriptor_mode == "motion_effort":
             (self.arm_joint_ids, self.motion_speed_reference,
              self.arm_effort_limits) = _motion_effort_parameters(
                  env, motion_speed_reference)
+        elif descriptor_mode == "approach_transport":
+            self.approach_transport_tracker = ApproachTransportMeasures(
+                env,
+                transport_start_distance=transport_start_distance,
+                transport_deviation_reference=(
+                    transport_deviation_reference))
+            self.approach_transport_tracker.reset()
 
     @property
     def unwrapped(self):
@@ -165,6 +291,8 @@ class QDRewardMJLab:
 
     def reset(self, **kwargs):
         observation, info = self.env.reset(**kwargs)
+        if self.approach_transport_tracker is not None:
+            self.approach_transport_tracker.reset(kwargs.get("env_ids"))
         return canonical_policy_observation(observation), info
 
     def step(self, action):
@@ -176,12 +304,16 @@ class QDRewardMJLab:
             info["log"] = dict(info["log"])
         done = (terminated | truncated).reshape(-1)
         final_policy_obs = policy_observation(terminal_obs).clone()
-        measures = lift_cube_measures(
-            self.env,
-            self.descriptor_mode,
-            arm_joint_ids=self.arm_joint_ids,
-            speed_reference=self.motion_speed_reference,
-            effort_limits=self.arm_effort_limits)
+        if self.approach_transport_tracker is not None:
+            measures = self.approach_transport_tracker.update()
+        else:
+            measures = lift_cube_measures(
+                self.env,
+                self.descriptor_mode,
+                arm_joint_ids=self.arm_joint_ids,
+                speed_reference=self.motion_speed_reference,
+                effort_limits=self.arm_effort_limits)
+        final_measures = measures.clone()
         command = self.env.command_manager.get_term("lift_height")
         task_metrics = {
             name: value.clone()
@@ -193,6 +325,9 @@ class QDRewardMJLab:
         task_metrics["object_height"] = (
             command.object.data.root_link_pos_w[:, 2]
             - self.env.scene.env_origins[:, 2]).clone()
+        if "task_success" in self.env.termination_manager.active_terms:
+            task_metrics["episode_success"] = self.env.termination_manager.get_term(
+                "task_success").to(torch.float32).clone()
         reward_manager = self.env.reward_manager
         step_reward = getattr(reward_manager, "_step_reward", None)
         if isinstance(step_reward, torch.Tensor):
@@ -207,6 +342,8 @@ class QDRewardMJLab:
         if done.any():
             env_ids = done.nonzero(as_tuple=False).squeeze(-1)
             next_obs, reset_info = self.env.reset(env_ids=env_ids)
+            if self.approach_transport_tracker is not None:
+                self.approach_transport_tracker.reset(env_ids)
             # Preserve episode logging produced by the terminal step.
             if "log" not in info and "log" in reset_info:
                 info["log"] = reset_info["log"]
@@ -218,7 +355,7 @@ class QDRewardMJLab:
         info["measure_reward_scale"] = self.measure_reward_scale
         info[FINAL_OBSERVATION] = {"policy": final_policy_obs}
         info[FINAL_OBSERVATION_MASK] = done.clone()
-        info[FINAL_MEASURES] = measures.clone()
+        info[FINAL_MEASURES] = final_measures
         info[TASK_METRICS] = task_metrics
         validate_qd_info(info, self.env.num_envs, measures.shape[1])
         return (canonical_policy_observation(next_obs), reward, terminated,
@@ -249,6 +386,30 @@ def configure_lift_task(cfg, env_cfg) -> None:
                 "mjlab_command_resampling_time must exceed episode_length_s "
                 "to prevent mid-episode cube teleportation")
         command_cfg.resampling_time_range = (resampling_time, resampling_time)
+
+    if getattr(cfg, "mjlab_terminate_on_success", False):
+        from mjlab.managers.reward_manager import RewardTermCfg
+        from mjlab.managers.termination_manager import TerminationTermCfg
+
+        max_object_speed = float(getattr(
+            cfg, "mjlab_success_max_object_speed", 0.15))
+        success_bonus = float(getattr(cfg, "mjlab_success_bonus", 50.0))
+        if max_object_speed <= 0:
+            raise ValueError(
+                "mjlab_success_max_object_speed must be positive")
+        if success_bonus < 0:
+            raise ValueError("mjlab_success_bonus cannot be negative")
+        success_params = {
+            "command_name": "lift_height",
+            "max_object_speed": max_object_speed,
+        }
+        env_cfg.terminations["task_success"] = TerminationTermCfg(
+            func=stable_lift_success, params=success_params)
+        if success_bonus > 0:
+            env_cfg.rewards["success_bonus"] = RewardTermCfg(
+                func=terminal_lift_success_bonus,
+                weight=success_bonus,
+                params=success_params)
 
 
 def make_base_env_mjlab(cfg):
@@ -295,7 +456,11 @@ def make_vec_env_mjlab(cfg):
         env,
         measure_reward_scale=getattr(cfg, "measure_reward_scale", None),
         descriptor_mode=getattr(cfg, "mjlab_descriptor_mode",
-                                "motion_effort"),
+                                "approach_transport"),
         motion_speed_reference=getattr(
-            cfg, "mjlab_motion_speed_reference", None))
+            cfg, "mjlab_motion_speed_reference", None),
+        transport_start_distance=getattr(
+            cfg, "mjlab_transport_start_distance", 0.03),
+        transport_deviation_reference=getattr(
+            cfg, "mjlab_transport_deviation_reference", 0.15))
     return env

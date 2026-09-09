@@ -27,7 +27,8 @@ def parse_args():
     parser.add_argument('--policies_per_batch', type=int, default=32)
     parser.add_argument('--seed', type=int, default=20260907)
     parser.add_argument('--descriptor_mode',
-                        choices=['motion_effort', 'height_approach', 'progress'],
+                        choices=['approach_transport', 'motion_effort',
+                                 'height_approach', 'progress'],
                         default=None,
                         help='Optional override; defaults to the saved config')
     return parser.parse_args()
@@ -95,6 +96,7 @@ def main():
                 'success_rate': data.get('episode_success_rate', np.nan),
                 'max_object_height': data.get('max_object_height', np.nan),
                 'min_position_error': data.get('min_position_error', np.nan),
+                'trajectory_length': data.get('traj_length', np.nan),
             })
 
     args.output.parent.mkdir(parents=True, exist_ok=True)

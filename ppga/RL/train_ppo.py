@@ -299,8 +299,9 @@ def parse_args():
     parser.add_argument('--episode_length_s', type=float, default=None,
                         help='Override the simulator episode horizon in seconds')
     parser.add_argument('--mjlab_descriptor_mode',
-                        choices=['motion_effort', 'height_approach', 'progress'],
-                        default='motion_effort',
+                        choices=['approach_transport', 'motion_effort',
+                                 'height_approach', 'progress'],
+                        default='approach_transport',
                         help='MJLab QD descriptor pair')
     parser.add_argument('--mjlab_motion_speed_reference', type=float,
                         default=None,
@@ -316,6 +317,21 @@ def parse_args():
     parser.add_argument('--mjlab_command_resampling_time', type=float,
                         default=None,
                         help='MJLab command period in seconds; must exceed the episode horizon')
+    parser.add_argument('--mjlab_terminate_on_success',
+                        type=lambda x: bool(strtobool(x)),
+                        default=True,
+                        help='Terminate MJLab lift episodes on controlled success')
+    parser.add_argument('--mjlab_success_bonus', type=float, default=50.0,
+                        help='One-time, dt-neutral reward added on MJLab success')
+    parser.add_argument('--mjlab_success_max_object_speed', type=float,
+                        default=0.15,
+                        help='Maximum cube speed in m/s for controlled success')
+    parser.add_argument('--mjlab_transport_start_distance', type=float,
+                        default=0.03,
+                        help='Cube displacement in meters that begins transport')
+    parser.add_argument('--mjlab_transport_deviation_reference', type=float,
+                        default=0.15,
+                        help='Signed transport deviation mapped to descriptor endpoints')
     parser.add_argument('--expdir', type=str, default=None,
                         help='Optional directory for PPO config, evaluation, and checkpoint')
     parser.add_argument('--checkpoint_interval_updates', type=int, default=100,
@@ -349,6 +365,15 @@ if __name__ == '__main__':
         raise ValueError('adaptive_kl requires target_kl')
     if cfg.initial_action_std <= 0:
         raise ValueError('initial_action_std must be positive')
+    if cfg.mjlab_success_bonus < 0:
+        raise ValueError('mjlab_success_bonus cannot be negative')
+    if cfg.mjlab_success_max_object_speed <= 0:
+        raise ValueError('mjlab_success_max_object_speed must be positive')
+    if cfg.mjlab_transport_start_distance <= 0:
+        raise ValueError('mjlab_transport_start_distance must be positive')
+    if cfg.mjlab_transport_deviation_reference <= 0:
+        raise ValueError(
+            'mjlab_transport_deviation_reference must be positive')
     if cfg.resume_checkpoint and cfg.initial_actor_checkpoint:
         raise ValueError('Use either resume_checkpoint or initial_actor_checkpoint')
 

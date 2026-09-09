@@ -209,8 +209,9 @@ def parse_args():
     parser.add_argument('--episode_length_s', type=float, default=None,
                         help='Override the simulator episode horizon in seconds')
     parser.add_argument('--mjlab_descriptor_mode',
-                        choices=['motion_effort', 'height_approach', 'progress'],
-                        default='motion_effort',
+                        choices=['approach_transport', 'motion_effort',
+                                 'height_approach', 'progress'],
+                        default='approach_transport',
                         help='MJLab QD descriptor pair')
     parser.add_argument('--mjlab_motion_speed_reference', type=float,
                         default=None,
@@ -226,6 +227,21 @@ def parse_args():
     parser.add_argument('--mjlab_command_resampling_time', type=float,
                         default=None,
                         help='MJLab command period in seconds; must exceed the episode horizon')
+    parser.add_argument('--mjlab_terminate_on_success',
+                        type=lambda x: bool(strtobool(x)),
+                        default=True,
+                        help='Terminate MJLab lift episodes on controlled success')
+    parser.add_argument('--mjlab_success_bonus', type=float, default=50.0,
+                        help='One-time, dt-neutral reward added on MJLab success')
+    parser.add_argument('--mjlab_success_max_object_speed', type=float,
+                        default=0.15,
+                        help='Maximum cube speed in m/s for controlled success')
+    parser.add_argument('--mjlab_transport_start_distance', type=float,
+                        default=0.03,
+                        help='Cube displacement in meters that begins transport')
+    parser.add_argument('--mjlab_transport_deviation_reference', type=float,
+                        default=0.15,
+                        help='Signed transport deviation mapped to descriptor endpoints')
 
     # QD Params
     parser.add_argument("--num_emitters",
@@ -573,7 +589,8 @@ def train_ppga(cfg: Box, vec_env):
         writer = csv.writer(f)
         writer.writerow([
             'Iteration', 'QD-Score', 'Coverage', 'Maximum', 'Average',
-            'Mean Success Rate', 'Max Success Rate', 'Max Object Height'
+            'Mean Success Rate', 'Max Success Rate', 'Max Object Height',
+            'Mean Trajectory Length'
         ])
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -817,6 +834,10 @@ def train_ppga(cfg: Box, vec_env):
                 data['max_object_height'] for data in elite_metadata
                 if 'max_object_height' in data
             ]
+            trajectory_lengths = [
+                data['traj_length'] for data in elite_metadata
+                if 'traj_length' in data
+            ]
             with open(summary_filename, 'a') as summary_file:
                 csv.writer(summary_file).writerow([
                     completed_itr, result_archive.stats.qd_score,
@@ -825,6 +846,8 @@ def train_ppga(cfg: Box, vec_env):
                     np.mean(success_rates) if success_rates else np.nan,
                     np.max(success_rates) if success_rates else np.nan,
                     np.max(object_heights) if object_heights else np.nan,
+                    (np.mean(trajectory_lengths)
+                     if trajectory_lengths else np.nan),
                 ])
 
         if (completed_itr % log_freq == 0 or final_itr) and cfg.take_archive_snapshots:
@@ -877,6 +900,15 @@ def main():
     if (cfg.mjlab_motion_speed_reference is not None
             and cfg.mjlab_motion_speed_reference <= 0):
         raise ValueError('mjlab_motion_speed_reference must be positive')
+    if cfg.mjlab_success_bonus < 0:
+        raise ValueError('mjlab_success_bonus cannot be negative')
+    if cfg.mjlab_success_max_object_speed <= 0:
+        raise ValueError('mjlab_success_max_object_speed must be positive')
+    if cfg.mjlab_transport_start_distance <= 0:
+        raise ValueError('mjlab_transport_start_distance must be positive')
+    if cfg.mjlab_transport_deviation_reference <= 0:
+        raise ValueError(
+            'mjlab_transport_deviation_reference must be positive')
     cfg.num_emitters = 1
     vec_env = make_vec_env(cfg)
     if cfg.action_transform is None:

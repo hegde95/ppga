@@ -11,6 +11,75 @@ from ppga.algorithm.mjlab_archive_utils import (
 from ppga.qd.emitters.opt import XNES
 
 
+def test_stable_lift_success_requires_goal_and_low_cube_speed():
+    command = SimpleNamespace(
+        target_pos=torch.zeros(3, 3),
+        object=SimpleNamespace(data=SimpleNamespace(
+            root_link_pos_w=torch.tensor([
+                [0.03, 0.0, 0.0],
+                [0.03, 0.0, 0.0],
+                [0.08, 0.0, 0.0],
+            ]),
+            root_link_vel_w=torch.tensor([
+                [0.10, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [0.20, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [0.00, 0.0, 0.0, 0.0, 0.0, 0.0],
+            ]),
+        )),
+        cfg=SimpleNamespace(success_threshold=0.05),
+    )
+    env = SimpleNamespace(
+        command_manager=SimpleNamespace(get_term=lambda _name: command),
+        step_dt=0.02,
+    )
+
+    success = mjlab_env.stable_lift_success(env, max_object_speed=0.15)
+    bonus = mjlab_env.terminal_lift_success_bonus(
+        env, max_object_speed=0.15)
+
+    assert torch.equal(success, torch.tensor([True, False, False]))
+    torch.testing.assert_close(bonus, torch.tensor([50.0, 0.0, 0.0]))
+
+
+def test_approach_transport_descriptors_capture_opposite_path_sides(
+        monkeypatch):
+    object_data = SimpleNamespace(root_link_pos_w=torch.zeros(2, 3))
+    command = SimpleNamespace(
+        object=SimpleNamespace(data=object_data),
+        target_pos=torch.tensor([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+    )
+    env = SimpleNamespace(
+        num_envs=2,
+        scene=SimpleNamespace(env_origins=torch.zeros(2, 3)),
+        command_manager=SimpleNamespace(get_term=lambda _name: command),
+        reward_manager=SimpleNamespace(get_term_cfg=lambda _name:
+                                       SimpleNamespace(params={
+                                           "reaching_std": 0.2
+                                       })),
+    )
+    ee_to_cube = torch.tensor([
+        [0.0, 0.1, 0.0],
+        [0.0, -0.1, 0.0],
+    ])
+    monkeypatch.setattr(
+        mjlab_env, "_raw_observation_term",
+        lambda _env, _name: ee_to_cube)
+
+    tracker = mjlab_env.ApproachTransportMeasures(
+        env, transport_start_distance=0.03,
+        transport_deviation_reference=0.15)
+    tracker.reset()
+    tracker.update()
+    object_data.root_link_pos_w = torch.tensor([
+        [0.5, 0.15, 0.0],
+        [0.5, -0.15, 0.0],
+    ])
+    measures = tracker.update()
+
+    torch.testing.assert_close(
+        measures, torch.tensor([[1.0, 1.0], [0.0, 0.0]]))
+
+
 def test_xnes_can_initialize_gradient_coefficients_at_zero():
     optimizer = XNES(
         solution_dim=3,

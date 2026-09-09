@@ -17,7 +17,8 @@ from ppga.algorithm.mjlab_archive_utils import (
     archive_solution_columns, metadata_success_rate,
     restore_archive_actor, select_representative_elites)
 from ppga.envs.mjlab.mjlab_env import (
-    _motion_effort_parameters, lift_cube_measures, make_base_env_mjlab)
+    ApproachTransportMeasures, _motion_effort_parameters, lift_cube_measures,
+    make_base_env_mjlab)
 from ppga.envs.qd_env import policy_observation, policy_observation_space
 
 
@@ -77,8 +78,10 @@ def main():
         'cuda' if torch.cuda.is_available() else 'cpu'))
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    descriptor_mode = getattr(cfg, 'mjlab_descriptor_mode', 'motion_effort')
+    descriptor_mode = getattr(
+        cfg, 'mjlab_descriptor_mode', 'approach_transport')
     descriptor_kwargs = {}
+    approach_transport_tracker = None
     if descriptor_mode == 'motion_effort':
         arm_ids, speed_reference, effort_limits = _motion_effort_parameters(
             env, getattr(cfg, 'mjlab_motion_speed_reference', None))
@@ -87,6 +90,13 @@ def main():
             'speed_reference': speed_reference,
             'effort_limits': effort_limits,
         }
+    elif descriptor_mode == 'approach_transport':
+        approach_transport_tracker = ApproachTransportMeasures(
+            env,
+            transport_start_distance=getattr(
+                cfg, 'mjlab_transport_start_distance', 0.03),
+            transport_deviation_reference=getattr(
+                cfg, 'mjlab_transport_deviation_reference', 0.15))
 
     rows = []
     try:
@@ -97,6 +107,8 @@ def main():
             for episode in range(args.episodes_per_policy):
                 episode_seed = args.seed + episode
                 observation, _ = env.reset(seed=episode_seed)
+                if approach_transport_tracker is not None:
+                    approach_transport_tracker.reset()
                 observation = policy_observation(observation).to(device)
                 frames = []
                 initial_frame = env.render()
@@ -121,11 +133,19 @@ def main():
                         action.to(torch.float32))
                     observation = policy_observation(observation).to(device)
                     reward_total += float(reward[0].item())
-                    measure_total += lift_cube_measures(
-                        env, descriptor_mode,
-                        **descriptor_kwargs)[0]
+                    if approach_transport_tracker is not None:
+                        rollout_measures = approach_transport_tracker.update()[0]
+                    else:
+                        rollout_measures = lift_cube_measures(
+                            env, descriptor_mode, **descriptor_kwargs)[0]
+                        measure_total += rollout_measures
                     command = env.command_manager.get_term('lift_height')
-                    episode_success = command.metrics.get('episode_success')
+                    if 'task_success' in env.termination_manager.active_terms:
+                        episode_success = env.termination_manager.get_term(
+                            'task_success').to(torch.float32)
+                    else:
+                        episode_success = command.metrics.get(
+                            'episode_success')
                     if episode_success is not None:
                         success = max(success,
                                       float(episode_success[0].item()))
@@ -141,6 +161,11 @@ def main():
                         break
 
                 steps = step + 1
+                if approach_transport_tracker is not None:
+                    final_rollout_measures = (
+                        approach_transport_tracker.measures()[0])
+                else:
+                    final_rollout_measures = measure_total / steps
                 filename = (
                     f'{selection_position:02d}_{reason}_archive_{archive_index}'
                     f'_episode_{episode:02d}.mp4')
@@ -162,8 +187,10 @@ def main():
                     'stored_measure_1': float(row['measures_1']),
                     'stored_success_rate': metadata_success_rate(row),
                     'rollout_objective': reward_total,
-                    'rollout_measure_0': float(measure_total[0].item() / steps),
-                    'rollout_measure_1': float(measure_total[1].item() / steps),
+                    'rollout_measure_0': float(
+                        final_rollout_measures[0].item()),
+                    'rollout_measure_1': float(
+                        final_rollout_measures[1].item()),
                     'rollout_success': success,
                     'rollout_max_object_height': max_height,
                     'steps': steps,
