@@ -14,7 +14,12 @@ python -m ppga.RL.train_ppo \
   --mjlab_fixed_goal=False \
   --mjlab_disable_curriculum=True \
   --mjlab_command_resampling_time=40.0 \
-  --mjlab_descriptor_mode=motion_effort \
+  --mjlab_terminate_on_success=True \
+  --mjlab_success_bonus=50.0 \
+  --mjlab_success_max_object_speed=0.15 \
+  --mjlab_descriptor_mode=approach_transport \
+  --mjlab_transport_start_distance=0.03 \
+  --mjlab_transport_deviation_reference=0.15 \
   --num_dims=2 \
   --seed="$SEED" \
   --rollout_length=24 \

@@ -4,7 +4,7 @@ set -euo pipefail
 ENV_NAME="lift_cube"
 SEED="${SEED:-42}"
 ENV_BATCH_SIZE="${ENV_BATCH_SIZE:-768}"
-POPSIZE="${POPSIZE:-64}"
+POPSIZE="${POPSIZE:-32}"
 TOTAL_ITERATIONS="${TOTAL_ITERATIONS:-1000}"
 SIGMA0="${SIGMA0:-0.05}"
 LEARNING_RATE="${LEARNING_RATE:-0.0001}"
@@ -25,9 +25,14 @@ python -m ppga.algorithm.train_ppga_isaac \
   --mjlab_fixed_goal=False \
   --mjlab_disable_curriculum=True \
   --mjlab_command_resampling_time=40.0 \
-  --mjlab_descriptor_mode=motion_effort \
+  --mjlab_terminate_on_success=True \
+  --mjlab_success_bonus=50.0 \
+  --mjlab_success_max_object_speed=0.15 \
+  --mjlab_descriptor_mode=approach_transport \
+  --mjlab_transport_start_distance=0.03 \
+  --mjlab_transport_deviation_reference=0.15 \
   --num_dims=2 \
-  --grid_size=25 \
+  --grid_size=12 \
   --seed="$SEED" \
   --rollout_length=24 \
   --env_batch_size="$ENV_BATCH_SIZE" \
@@ -60,7 +65,7 @@ python -m ppga.algorithm.train_ppga_isaac \
   --move_mean_iters="$MOVE_MEAN_ITERS" \
   --archive_lr=0.1 \
   --threshold_min=0 \
-  --archive_min_success_rate=0.5 \
+  --archive_min_success_rate=0.75 \
   --log_arch_freq=25 \
   --save_scheduler=False \
   --save_heatmaps=True \
