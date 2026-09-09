@@ -108,7 +108,7 @@ python -m pip install -r requirements-mjlab.txt
 Run a small PPO smoke test:
 
 ```bash
-python -m ppga.RL.train_ppo --env_name=lift_cube --env_type=mjlab --env_batch_size=256 --rollout_length=24 --total_timesteps=262144 --num_minibatches=4 --update_epochs=5 --learning_rate=0.001 --entropy_coef=0.005 --target_kl=0.01 --adaptive_kl=True --norm_adv_per_minibatch=False --mixed_precision=False --normalize_obs=True --action_transform=none --action_std_parameterization=direct --initial_action_std=0.5 --actor_hidden_dims 512 256 128 --num_dims=2 --value_bootstrap=True --mjlab_fixed_goal=False --mjlab_disable_curriculum=True --mjlab_command_resampling_time=40 --mjlab_descriptor_mode=motion_effort
+python -m ppga.RL.train_ppo --env_name=lift_cube --env_type=mjlab --env_batch_size=256 --rollout_length=24 --total_timesteps=262144 --num_minibatches=4 --update_epochs=5 --learning_rate=0.0001 --entropy_coef=0.005 --target_kl=0.01 --adaptive_kl=True --norm_adv_per_minibatch=False --mixed_precision=False --normalize_obs=True --action_transform=none --action_std_parameterization=direct --initial_action_std=0.5 --actor_hidden_dims 512 256 128 --num_dims=2 --value_bootstrap=True --mjlab_fixed_goal=False --mjlab_disable_curriculum=True --mjlab_command_resampling_time=40 --mjlab_terminate_on_success=True --mjlab_success_bonus=50 --mjlab_success_max_object_speed=0.15 --mjlab_descriptor_mode=approach_transport
 ```
 
 To verify the installed simulator and task independently of PPGA's PPO, run
@@ -172,17 +172,26 @@ The recommended MJLab preset randomizes the cube and goal once per episode,
 disables the reward curriculum, and makes the command-resampling interval
 longer than the episode. This is a stationary task distribution without
 mid-episode cube teleports. A single fixed 30 cm target was empirically prone
-to a reach-only local optimum. The default `motion_effort` descriptors in
-`[0, 1]` are mean absolute arm-joint speed, normalized by the task's velocity
-penalty threshold, and mean absolute joint-space actuator effort, normalized
-by each actuator's configured effort limit. Both exclude the gripper joints.
-`height_approach` and `progress` preserve the earlier descriptor definitions
-for loading or reproducing older archives.
+to a reach-only local optimum. A lift now succeeds only when the cube is within
+the task's 5 cm goal tolerance and moving no faster than 0.15 m/s. Success
+terminates the episode and adds a one-time reward of 50, eliminating the old
+incentive to accumulate reward by holding the cube motionless at the goal.
+
+The default `approach_transport` descriptors in `[0, 1]` target visibly
+different manipulation paths. The first is the robot-relative left/right side
+from which the end effector approaches the cube, weighted toward samples near
+the cube. The second is the cube's signed left/right deviation from the direct
+start-to-goal transport path. It is averaged only after the cube has moved 3
+cm, and deviations of 15 cm map to the descriptor endpoints. Terminal archive
+coordinates use these complete episode statistics rather than averages of
+intermediate estimates. `motion_effort`, `height_approach`, and `progress`
+remain available for reproducing older archives.
 
 Task metrics are logged during PPO and stored in elite metadata. PPGA's
-`summary.csv` includes archive mean/max success rate and maximum object height.
-The default PPGA preset admits only policies with at least 50% episode success,
-in addition to rejecting objectives below zero. Dense task and descriptor
+`summary.csv` includes archive mean/max success rate, maximum object height,
+and mean trajectory length. The default PPGA preset uses a 12-by-12 grid and
+admits only policies with at least 75% episode success, in addition to
+rejecting objectives below zero. Dense task and descriptor
 rewards remain available for PPO/DQD gradients, so this gate changes archive
 eligibility rather than making gradient learning sparse. Archive-only
 checkpoints are saved every 25 iterations and heatmaps every 10 iterations to
@@ -198,6 +207,12 @@ and can be selected explicitly with `--xnes_center_init=random`. Override the
 MJLab defaults with `CALC_GRADIENT_ITERS`, `MOVE_MEAN_ITERS`, and
 `LEARNING_RATE` when conducting ablations.
 
+For a higher-throughput local or cluster run, first smoke-test
+`ENV_BATCH_SIZE=1152`; if memory and simulation stability remain healthy, use
+`ENV_BATCH_SIZE=1536`. With the default population of 32, these settings give
+36 or 48 independent evaluation episodes per policy and make archive admission
+more reliable. Do not reuse a seed directory from an older descriptor mode.
+
 Reevaluate every policy in a saved archive under the same reset-only episodic
 task distribution with:
 
@@ -207,8 +222,9 @@ python -m ppga.algorithm.evaluate_mjlab_archive --archive experiments/ppga_mjlab
 
 The output retains stored objective/descriptors alongside fresh objective,
 descriptors, success rate, maximum object height, and minimum goal-position
-error. The adapter disables MJLab auto-reset, records the true terminal state,
-and partially resets only completed environments.
+error, plus mean trajectory length. The adapter disables MJLab auto-reset,
+records the true terminal state, and partially resets only completed
+environments.
 
 Render representative successful archive policies to MP4 after a checkpoint:
 
