@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from ppga.RL.ppo import add_time_limit_bootstrap
+from ppga.RL.ppo import add_time_limit_bootstrap, aggregate_episode_measures
 from ppga.envs.qd_env import (policy_observation, replace_done_rows,
                               validate_qd_info)
 from ppga.utils.normalize import ObsNormalizer
@@ -38,6 +38,24 @@ def test_terminal_measures_replace_only_done_rows():
                                torch.tensor([True, False, True]))
     assert torch.equal(result, torch.tensor([[3.0, 3.0], [1.0, 1.0],
                                              [5.0, 5.0]]))
+
+
+def test_episode_measure_aggregation_prefers_terminal_descriptors():
+    history = torch.tensor([
+        [[0.1, 0.2], [0.2, 0.4]],
+        [[0.3, 0.4], [0.4, 0.8]],
+    ])
+    terminal = torch.tensor([[0.9, 0.8], [0.0, 0.0]])
+
+    result = aggregate_episode_measures(
+        history,
+        torch.tensor([2, 2]),
+        terminal,
+        torch.tensor([True, False]),
+    )
+
+    torch.testing.assert_close(
+        result, torch.tensor([[0.9, 0.8], [0.3, 0.6]]))
 
 
 def test_observation_snapshot_normalization_does_not_update_statistics():

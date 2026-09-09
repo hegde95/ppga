@@ -12,8 +12,9 @@ from torch import Tensor
 
 from ppga.models.actor_critic import Actor, Critic, QDCritic
 from ppga.models.vectorized import VectorizedActor
-from ppga.envs.qd_env import (FINAL_OBSERVATION, FINAL_OBSERVATION_MASK,
-                              TASK_METRICS, policy_observation)
+from ppga.envs.qd_env import (FINAL_MEASURES, FINAL_OBSERVATION,
+                              FINAL_OBSERVATION_MASK, TASK_METRICS,
+                              policy_observation)
 from ppga.utils.utilities import log, save_checkpoint
 
 # based off of the clean-rl implementation
@@ -61,6 +62,22 @@ def add_time_limit_bootstrap(rewards: Tensor, truncated: Tensor,
             f"Cannot bootstrap {count} truncated transitions: the backend did "
             "not provide their pre-reset final observations")
     return rewards + float(gamma) * truncated.to(rewards.dtype) * terminal_values
+
+
+def aggregate_episode_measures(measures_acc: Tensor, traj_lengths: Tensor,
+                               final_measures: Tensor,
+                               final_measure_mask: Tensor) -> Tensor:
+    """Prefer backend-provided terminal descriptors over timestep averages."""
+    num_envs = measures_acc.shape[1]
+    measures = torch.zeros(
+        num_envs, measures_acc.shape[2], device=measures_acc.device)
+    for index in range(num_envs):
+        if final_measure_mask[index]:
+            measures[index] = final_measures[index]
+        else:
+            length = int(traj_lengths[index].item())
+            measures[index] = measures_acc[:length, index].mean(dim=0)
+    return measures
 
 
 class PPO:
@@ -996,6 +1013,9 @@ class PPO:
             (num_steps, num_envs, self.cfg.num_dims), device=self.device)
         measures = torch.zeros(
             (num_envs, self.cfg.num_dims), device=self.device)
+        final_measures = torch.zeros_like(measures)
+        final_measure_mask = torch.zeros(
+            num_envs, dtype=torch.bool, device=self.device)
         task_metric_extrema = {}
 
         fixed_obs_stats = None
@@ -1021,6 +1041,17 @@ class PPO:
                 infos = env_returns[4]
 
                 measures_acc[traj_length] = infos['measures']
+                if FINAL_MEASURES in infos:
+                    measure_mask = infos.get(
+                        FINAL_OBSERVATION_MASK, next_dones).to(
+                            self.device).bool().reshape(-1)
+                    # Evaluation may continue resetting fast environments until
+                    # every policy rollout has finished. Keep the descriptor
+                    # from each environment's first completed episode only.
+                    measure_mask &= ~dones.to(self.device)
+                    final_measures[measure_mask] = infos[FINAL_MEASURES].to(
+                        self.device)[measure_mask]
+                    final_measure_mask |= measure_mask
                 active = (~dones).to(self.device)
                 for name, values in infos.get(TASK_METRICS, {}).items():
                     values = values.to(self.device).reshape(-1)
@@ -1050,10 +1081,9 @@ class PPO:
         # the first done in each env is where that trajectory ends
         # CPU argmax is not implemented for bool tensors in PyTorch 2.7.
         traj_lengths = torch.argmax(all_dones.to(torch.int64), dim=0) + 1
-        # TODO: figure out how to vectorize this
-        for i in range(num_envs):
-            measures[i] = measures_acc[:traj_lengths[i],
-                                       i].sum(dim=0) / traj_lengths[i]
+        measures = aggregate_episode_measures(
+            measures_acc, traj_lengths.to(self.device), final_measures,
+            final_measure_mask)
         measures = measures.reshape(vec_agent.num_models,
                                     num_envs // vec_agent.num_models,
                                     -1).mean(dim=1).detach().cpu().numpy()
