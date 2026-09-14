@@ -292,6 +292,12 @@ def parse_args():
                         default=True,
                         help='Use policy means rather than samples during evaluation')
     parser.add_argument('--eval_max_steps', type=int, default=0)
+    parser.add_argument('--eval_common_random_numbers',
+                        type=lambda x: bool(strtobool(x)),
+                        default=False,
+                        help='Evaluate candidate policies on identical reset scenarios')
+    parser.add_argument('--eval_common_seed_offset', type=int, default=1000000,
+                        help='Seed offset for common-random-number evaluations')
     parser.add_argument('--measure_reward_scale',
                         type=float,
                         default=None,
@@ -329,9 +335,12 @@ def parse_args():
     parser.add_argument('--mjlab_transport_start_distance', type=float,
                         default=0.03,
                         help='Cube displacement in meters that begins transport')
+    parser.add_argument('--mjlab_approach_deviation_reference', type=float,
+                        default=0.05,
+                        help='Approach-path deviation mapped to descriptor endpoints')
     parser.add_argument('--mjlab_transport_deviation_reference', type=float,
                         default=0.15,
-                        help='Signed transport deviation mapped to descriptor endpoints')
+                        help='Peak signed transport deviation mapped to descriptor endpoints')
     parser.add_argument('--expdir', type=str, default=None,
                         help='Optional directory for PPO config, evaluation, and checkpoint')
     parser.add_argument('--checkpoint_interval_updates', type=int, default=100,
@@ -371,9 +380,14 @@ if __name__ == '__main__':
         raise ValueError('mjlab_success_max_object_speed must be positive')
     if cfg.mjlab_transport_start_distance <= 0:
         raise ValueError('mjlab_transport_start_distance must be positive')
+    if cfg.mjlab_approach_deviation_reference <= 0:
+        raise ValueError(
+            'mjlab_approach_deviation_reference must be positive')
     if cfg.mjlab_transport_deviation_reference <= 0:
         raise ValueError(
             'mjlab_transport_deviation_reference must be positive')
+    if cfg.eval_common_seed_offset < 0:
+        raise ValueError('eval_common_seed_offset cannot be negative')
     if cfg.resume_checkpoint and cfg.initial_actor_checkpoint:
         raise ValueError('Use either resume_checkpoint or initial_actor_checkpoint')
 

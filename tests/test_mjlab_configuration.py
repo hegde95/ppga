@@ -57,18 +57,25 @@ def test_approach_transport_descriptors_capture_opposite_path_sides(
                                            "reaching_std": 0.2
                                        })),
     )
-    ee_to_cube = torch.tensor([
-        [0.0, 0.1, 0.0],
-        [0.0, -0.1, 0.0],
-    ])
+    observation = {
+        "ee_to_cube": torch.tensor([
+            [0.1, 0.0, 0.0],
+            [0.1, 0.0, 0.0],
+        ])
+    }
     monkeypatch.setattr(
         mjlab_env, "_raw_observation_term",
-        lambda _env, _name: ee_to_cube)
+        lambda _env, name: observation[name])
 
     tracker = mjlab_env.ApproachTransportMeasures(
         env, transport_start_distance=0.03,
+        approach_deviation_reference=0.15,
         transport_deviation_reference=0.15)
     tracker.reset()
+    observation["ee_to_cube"] = torch.tensor([
+        [0.05, 0.15, 0.0],
+        [0.05, -0.15, 0.0],
+    ])
     tracker.update()
     object_data.root_link_pos_w = torch.tensor([
         [0.5, 0.15, 0.0],
@@ -78,6 +85,39 @@ def test_approach_transport_descriptors_capture_opposite_path_sides(
 
     torch.testing.assert_close(
         measures, torch.tensor([[1.0, 1.0], [0.0, 0.0]]))
+
+    # Peak transport deviation survives returning to the direct path.
+    object_data.root_link_pos_w = torch.tensor([
+        [0.75, 0.0, 0.0],
+        [0.75, 0.0, 0.0],
+    ])
+    torch.testing.assert_close(tracker.update()[:, 1],
+                               torch.tensor([1.0, 0.0]))
+
+
+def test_common_random_reset_replays_seed_for_each_policy_group(monkeypatch):
+    reset_ids = []
+    reset_seeds = []
+    monkeypatch.setattr(
+        mjlab_env, "_seed_mjlab_rng",
+        lambda seed: reset_seeds.append(seed))
+
+    class FakeEnv:
+        num_envs = 6
+        scene = SimpleNamespace(env_origins=torch.zeros(6, 3))
+
+        def reset(self, env_ids):
+            reset_ids.append(env_ids.cpu().tolist())
+            return {"actor": torch.zeros(6, 4)}, {}
+
+    wrapper = SimpleNamespace(
+        env=FakeEnv(), approach_transport_tracker=None)
+    observation, _ = mjlab_env.QDRewardMJLab.reset_with_common_random_numbers(
+        wrapper, num_groups=3, seed=1234)
+
+    assert reset_seeds == [1234, 1234, 1234]
+    assert reset_ids == [[0, 1], [2, 3], [4, 5]]
+    assert observation["policy"].shape == (6, 4)
 
 
 def test_xnes_can_initialize_gradient_coefficients_at_zero():

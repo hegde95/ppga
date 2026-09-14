@@ -33,6 +33,13 @@ def _raw_observation_term(env, term_name: str) -> torch.Tensor:
     return term_cfg.func(env, **term_cfg.params)
 
 
+def _seed_mjlab_rng(seed: int) -> None:
+    """Seed MJLab's reset-time random number generators."""
+    from mjlab.utils.random import seed_rng
+
+    seed_rng(int(seed))
+
+
 def stable_lift_success(env, command_name="lift_height",
                         max_object_speed=0.15) -> torch.Tensor:
     """Return true when the cube is at the goal and no longer moving fast."""
@@ -56,14 +63,20 @@ class ApproachTransportMeasures:
     """Track task-relative approach and cube-transport path descriptors."""
 
     def __init__(self, env, transport_start_distance=0.03,
+                 approach_deviation_reference=0.05,
                  transport_deviation_reference=0.15):
         self.env = env
         self.transport_start_distance = float(transport_start_distance)
+        self.approach_deviation_reference = float(
+            approach_deviation_reference)
         self.transport_deviation_reference = float(
             transport_deviation_reference)
         if self.transport_start_distance <= 0:
             raise ValueError(
                 "mjlab_transport_start_distance must be positive")
+        if self.approach_deviation_reference <= 0:
+            raise ValueError(
+                "mjlab_approach_deviation_reference must be positive")
         if self.transport_deviation_reference <= 0:
             raise ValueError(
                 "mjlab_transport_deviation_reference must be positive")
@@ -74,10 +87,10 @@ class ApproachTransportMeasures:
         num_envs = env.num_envs
         self.initial_object_pos = torch.zeros(num_envs, 3, device=device)
         self.initial_goal_pos = torch.zeros(num_envs, 3, device=device)
+        self.initial_ee_to_cube = torch.zeros(num_envs, 3, device=device)
         self.approach_sum = torch.zeros(num_envs, device=device)
         self.approach_weight = torch.zeros(num_envs, device=device)
-        self.transport_sum = torch.zeros(num_envs, device=device)
-        self.transport_count = torch.zeros(num_envs, device=device)
+        self.transport_peak = torch.zeros(num_envs, device=device)
         self.transport_started = torch.zeros(
             num_envs, dtype=torch.bool, device=device)
 
@@ -89,10 +102,11 @@ class ApproachTransportMeasures:
         self.initial_object_pos[env_ids] = (
             command.object.data.root_link_pos_w[env_ids])
         self.initial_goal_pos[env_ids] = command.target_pos[env_ids]
+        self.initial_ee_to_cube[env_ids] = _raw_observation_term(
+            self.env, "ee_to_cube")[env_ids]
         self.approach_sum[env_ids] = 0.0
         self.approach_weight[env_ids] = 0.0
-        self.transport_sum[env_ids] = 0.0
-        self.transport_count[env_ids] = 0.0
+        self.transport_peak[env_ids] = 0.0
         self.transport_started[env_ids] = False
 
     def update(self) -> torch.Tensor:
@@ -100,12 +114,18 @@ class ApproachTransportMeasures:
         object_pos = command.object.data.root_link_pos_w
         ee_to_cube = _raw_observation_term(self.env, "ee_to_cube")
         distance = torch.linalg.vector_norm(ee_to_cube, dim=-1)
-        horizontal_distance = torch.linalg.vector_norm(
-            ee_to_cube[:, :2], dim=-1).clamp_min(1e-6)
-        # Base-frame y is the robot's left/right axis. Proximity weighting
-        # emphasizes the final approach rather than the distant initial pose.
-        approach_side = 0.5 * (
-            ee_to_cube[:, 1] / horizontal_distance + 1.0)
+        initial_approach_xy = self.initial_ee_to_cube[:, :2]
+        initial_approach_direction = initial_approach_xy / torch.linalg.vector_norm(
+            initial_approach_xy, dim=-1, keepdim=True).clamp_min(1e-6)
+        # Measure signed displacement perpendicular to the direct line from
+        # the episode's initial end-effector pose to the cube. Unlike a fixed
+        # robot-frame left/right coordinate, this stays meaningful when reset
+        # randomization moves the cube.
+        approach_deviation = (
+            initial_approach_direction[:, 0] * ee_to_cube[:, 1]
+            - initial_approach_direction[:, 1] * ee_to_cube[:, 0])
+        approach_side = 0.5 + approach_deviation / (
+            2.0 * self.approach_deviation_reference)
         approach_active = ~self.transport_started
         proximity = torch.exp(
             -distance.square() / self.reaching_std**2) * approach_active
@@ -124,12 +144,18 @@ class ApproachTransportMeasures:
         straight_path_pos = (
             self.initial_object_pos
             + progress.clamp(0.0, 1.0).unsqueeze(-1) * direct_path)
-        lateral_deviation = object_pos[:, 1] - straight_path_pos[:, 1]
-        transport_side = 0.5 + lateral_deviation / (
-            2.0 * self.transport_deviation_reference)
-        transport_active = self.transport_started.to(torch.float32)
-        self.transport_sum += transport_side.clamp(0.0, 1.0) * transport_active
-        self.transport_count += transport_active
+        direct_path_xy = direct_path[:, :2]
+        direct_path_direction = direct_path_xy / torch.linalg.vector_norm(
+            direct_path_xy, dim=-1, keepdim=True).clamp_min(1e-6)
+        path_error_xy = object_pos[:, :2] - straight_path_pos[:, :2]
+        lateral_deviation = (
+            direct_path_direction[:, 0] * path_error_xy[:, 1]
+            - direct_path_direction[:, 1] * path_error_xy[:, 0])
+        farther_from_path = (
+            self.transport_started
+            & (lateral_deviation.abs() > self.transport_peak.abs()))
+        self.transport_peak = torch.where(
+            farther_from_path, lateral_deviation, self.transport_peak)
         return self.measures()
 
     def measures(self) -> torch.Tensor:
@@ -137,10 +163,8 @@ class ApproachTransportMeasures:
             self.approach_weight > 0,
             self.approach_sum / self.approach_weight.clamp_min(1e-6),
             torch.full_like(self.approach_sum, 0.5))
-        transport = torch.where(
-            self.transport_count > 0,
-            self.transport_sum / self.transport_count.clamp_min(1.0),
-            torch.full_like(self.transport_sum, 0.5))
+        transport = 0.5 + self.transport_peak / (
+            2.0 * self.transport_deviation_reference)
         return torch.stack((approach.clamp(0.0, 1.0),
                             transport.clamp(0.0, 1.0)), dim=-1)
 
@@ -247,6 +271,7 @@ class QDRewardMJLab:
                  descriptor_mode="approach_transport",
                  motion_speed_reference=None,
                  transport_start_distance=0.03,
+                 approach_deviation_reference=0.05,
                  transport_deviation_reference=0.15):
         self.env = env
         if env.cfg.auto_reset:
@@ -278,6 +303,8 @@ class QDRewardMJLab:
             self.approach_transport_tracker = ApproachTransportMeasures(
                 env,
                 transport_start_distance=transport_start_distance,
+                approach_deviation_reference=(
+                    approach_deviation_reference),
                 transport_deviation_reference=(
                     transport_deviation_reference))
             self.approach_transport_tracker.reset()
@@ -294,6 +321,34 @@ class QDRewardMJLab:
         if self.approach_transport_tracker is not None:
             self.approach_transport_tracker.reset(kwargs.get("env_ids"))
         return canonical_policy_observation(observation), info
+
+    def reset_with_common_random_numbers(self, num_groups: int, seed: int):
+        """Reset contiguous policy groups onto identical random scenarios."""
+        num_groups = int(num_groups)
+        if num_groups < 1 or self.env.num_envs % num_groups != 0:
+            raise ValueError(
+                "num_groups must evenly divide the MJLab environment count")
+
+        group_size = self.env.num_envs // num_groups
+        info = {}
+        policy_buffer = None
+        for group_index in range(num_groups):
+            # Rewinding every RNG before a same-sized partial reset gives each
+            # policy block the same ordered cube/goal samples.
+            _seed_mjlab_rng(seed)
+            start = group_index * group_size
+            env_ids = torch.arange(
+                start, start + group_size,
+                device=self.env.scene.env_origins.device)
+            observation, info = self.env.reset(env_ids=env_ids)
+            group_policy = policy_observation(observation)
+            if policy_buffer is None:
+                policy_buffer = torch.empty_like(group_policy)
+            policy_buffer[env_ids] = group_policy[env_ids]
+
+        if self.approach_transport_tracker is not None:
+            self.approach_transport_tracker.reset()
+        return {"policy": policy_buffer}, info
 
     def step(self, action):
         terminal_obs, reward, terminated, truncated, env_info = self.env.step(action)
@@ -461,6 +516,8 @@ def make_vec_env_mjlab(cfg):
             cfg, "mjlab_motion_speed_reference", None),
         transport_start_distance=getattr(
             cfg, "mjlab_transport_start_distance", 0.03),
+        approach_deviation_reference=getattr(
+            cfg, "mjlab_approach_deviation_reference", 0.05),
         transport_deviation_reference=getattr(
             cfg, "mjlab_transport_deviation_reference", 0.15))
     return env

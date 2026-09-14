@@ -95,6 +95,8 @@ def main():
             env,
             transport_start_distance=getattr(
                 cfg, 'mjlab_transport_start_distance', 0.03),
+            approach_deviation_reference=getattr(
+                cfg, 'mjlab_approach_deviation_reference', 0.05),
             transport_deviation_reference=getattr(
                 cfg, 'mjlab_transport_deviation_reference', 0.15))
 
