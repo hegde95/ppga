@@ -172,6 +172,7 @@ class PPO:
 
         self.next_obs = None
         self._rollout_state_valid = False
+        self._evaluation_reset_count = 0
         # for moving the mean solution point w/ ppo
         self._grad_coeffs = torch.zeros(cfg.num_dims + 1).to(self.device)
         self._grad_coeffs[
@@ -1005,7 +1006,18 @@ class PPO:
         num_steps = int(getattr(self.cfg, 'eval_max_steps', 0) or
                         getattr(vec_env.unwrapped, 'max_episode_length', 1000))
 
-        obs = self._policy_obs(vec_env.reset()[0])
+        if (getattr(self.cfg, 'eval_common_random_numbers', False)
+                and hasattr(vec_env, 'reset_with_common_random_numbers')):
+            evaluation_seed = (
+                self.seed
+                + int(getattr(self.cfg, 'eval_common_seed_offset', 1000000))
+                + self._evaluation_reset_count)
+            reset_result = vec_env.reset_with_common_random_numbers(
+                vec_agent.num_models, evaluation_seed)
+            self._evaluation_reset_count += 1
+        else:
+            reset_result = vec_env.reset()
+        obs = self._policy_obs(reset_result[0])
         obs = obs.to(self.device)
         dones = torch.zeros(num_envs, dtype=torch.bool)
         all_dones = torch.zeros((num_steps, num_envs), dtype=torch.bool)

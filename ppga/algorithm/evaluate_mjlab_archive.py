@@ -46,6 +46,10 @@ def main():
     cfg.num_envs = args.env_batch_size
     cfg.seed = args.seed
     cfg.use_wandb = False
+    cfg.eval_common_random_numbers = getattr(
+        cfg, 'eval_common_random_numbers', True)
+    cfg.eval_common_seed_offset = getattr(
+        cfg, 'eval_common_seed_offset', 1000000)
     cfg.mjlab_fixed_goal = getattr(cfg, 'mjlab_fixed_goal', False)
     cfg.mjlab_disable_curriculum = getattr(
         cfg, 'mjlab_disable_curriculum', True)
