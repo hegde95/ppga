@@ -30,6 +30,7 @@ python -m ppga.algorithm.train_ppga_isaac \
   --mjlab_success_max_object_speed=0.15 \
   --mjlab_descriptor_mode=approach_transport \
   --mjlab_transport_start_distance=0.03 \
+  --mjlab_approach_deviation_reference=0.05 \
   --mjlab_transport_deviation_reference=0.15 \
   --num_dims=2 \
   --grid_size=12 \
@@ -54,6 +55,7 @@ python -m ppga.algorithm.train_ppga_isaac \
   --actor_hidden_dims 512 256 128 \
   --value_bootstrap=True \
   --eval_deterministic=True \
+  --eval_common_random_numbers=True \
   --normalize_obs=True \
   --normalize_returns=False \
   --total_iterations="$TOTAL_ITERATIONS" \
@@ -66,7 +68,7 @@ python -m ppga.algorithm.train_ppga_isaac \
   --archive_lr=0.1 \
   --threshold_min=0 \
   --archive_min_success_rate=0.75 \
-  --log_arch_freq=25 \
+  --log_arch_freq="${LOG_ARCH_FREQ:-10}" \
   --save_scheduler=False \
   --save_heatmaps=True \
   --heatmap_freq=10 \

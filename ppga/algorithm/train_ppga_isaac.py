@@ -3,6 +3,7 @@ import copy
 import csv
 import os
 import pickle
+import signal
 import shutil
 from pathlib import Path
 
@@ -24,6 +25,17 @@ from ppga.utils.archive_utils_isaac import (archive_df_to_archive,
                                       save_heatmap)
 from ppga.utils.utilities import (config_wandb, get_checkpoints, log, save_cfg,
                                   set_file_handler)
+
+
+_STOP_SIGNAL = None
+
+
+def _request_graceful_stop(signum, _frame):
+    """Finish the active QD iteration so its archive can be checkpointed."""
+    global _STOP_SIGNAL
+    _STOP_SIGNAL = signum
+    log.warning(
+        f'Received signal {signum}; checkpointing after the current iteration')
 
 
 def strtobool(val):
@@ -202,6 +214,12 @@ def parse_args():
                         default=True,
                         help='Use policy means rather than samples for archive evaluation')
     parser.add_argument('--eval_max_steps', type=int, default=0)
+    parser.add_argument('--eval_common_random_numbers',
+                        type=lambda x: bool(strtobool(x)),
+                        default=False,
+                        help='Evaluate candidate policies on identical reset scenarios')
+    parser.add_argument('--eval_common_seed_offset', type=int, default=1000000,
+                        help='Seed offset for common-random-number evaluations')
     parser.add_argument('--measure_reward_scale',
                         type=float,
                         default=None,
@@ -239,9 +257,12 @@ def parse_args():
     parser.add_argument('--mjlab_transport_start_distance', type=float,
                         default=0.03,
                         help='Cube displacement in meters that begins transport')
+    parser.add_argument('--mjlab_approach_deviation_reference', type=float,
+                        default=0.05,
+                        help='Approach-path deviation mapped to descriptor endpoints')
     parser.add_argument('--mjlab_transport_deviation_reference', type=float,
                         default=0.15,
-                        help='Signed transport deviation mapped to descriptor endpoints')
+                        help='Peak signed transport deviation mapped to descriptor endpoints')
 
     # QD Params
     parser.add_argument("--num_emitters",
@@ -801,7 +822,7 @@ def train_ppga(cfg: Box, vec_env):
                          emitter_loc=emitter_loc,
                          forces=None)
 
-        final_itr = completed_itr == itrs
+        final_itr = completed_itr == itrs or _STOP_SIGNAL is not None
         if completed_itr % log_arch_freq == 0 or final_itr:
             final_cp_dir = os.path.join(cp_dir, f'cp_{completed_itr:08d}')
             os.makedirs(final_cp_dir, exist_ok=True)
@@ -884,8 +905,15 @@ def train_ppga(cfg: Box, vec_env):
                     object_heights)
             wandb.log(qd_metrics)
 
+        if _STOP_SIGNAL is not None:
+            log.info(
+                f'Stopping cleanly after iteration {completed_itr}; '
+                'the final archive checkpoint and summary row were saved')
+            break
+
 
 def main():
+    signal.signal(signal.SIGTERM, _request_graceful_stop)
     cfg = parse_args()
     if cfg.total_iterations < 1:
         raise ValueError('total_iterations must be at least 1')
@@ -906,9 +934,14 @@ def main():
         raise ValueError('mjlab_success_max_object_speed must be positive')
     if cfg.mjlab_transport_start_distance <= 0:
         raise ValueError('mjlab_transport_start_distance must be positive')
+    if cfg.mjlab_approach_deviation_reference <= 0:
+        raise ValueError(
+            'mjlab_approach_deviation_reference must be positive')
     if cfg.mjlab_transport_deviation_reference <= 0:
         raise ValueError(
             'mjlab_transport_deviation_reference must be positive')
+    if cfg.eval_common_seed_offset < 0:
+        raise ValueError('eval_common_seed_offset cannot be negative')
     cfg.num_emitters = 1
     vec_env = make_vec_env(cfg)
     if cfg.action_transform is None:
