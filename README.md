@@ -178,14 +178,16 @@ terminates the episode and adds a one-time reward of 50, eliminating the old
 incentive to accumulate reward by holding the cube motionless at the goal.
 
 The default `approach_transport` descriptors in `[0, 1]` target visibly
-different manipulation paths. The first is the robot-relative left/right side
-from which the end effector approaches the cube, weighted toward samples near
-the cube. The second is the cube's signed left/right deviation from the direct
-start-to-goal transport path. It is averaged only after the cube has moved 3
-cm, and deviations of 15 cm map to the descriptor endpoints. Terminal archive
-coordinates use these complete episode statistics rather than averages of
-intermediate estimates. `motion_effort`, `height_approach`, and `progress`
-remain available for reproducing older archives.
+different manipulation paths. The first is the end effector's signed deviation
+from its episode-initial straight path to the cube, weighted toward samples
+near the cube. The second retains the cube's largest signed perpendicular
+deviation from its direct start-to-goal transport path after the cube has moved
+3 cm. This peak statistic does not disappear when the cube later returns to the
+direct path. Approach deviations of 5 cm and transport deviations of 15 cm map
+to their respective descriptor endpoints. Terminal archive coordinates use
+these complete episode statistics rather than averages of intermediate
+estimates. `motion_effort`, `height_approach`, and `progress` remain available
+for reproducing older archives.
 
 Task metrics are logged during PPO and stored in elite metadata. PPGA's
 `summary.csv` includes archive mean/max success rate, maximum object height,
@@ -194,9 +196,18 @@ admits only policies with at least 75% episode success, in addition to
 rejecting objectives below zero. Dense task and descriptor
 rewards remain available for PPO/DQD gradients, so this gate changes archive
 eligibility rather than making gradient learning sparse. Archive-only
-checkpoints are saved every 25 iterations and heatmaps every 10 iterations to
-avoid multi-gigabyte scheduler checkpoints. Set `--save_scheduler=True` only
-when full optimizer/emitter restart state is worth the storage cost.
+checkpoints are saved every 10 iterations and heatmaps every 10 iterations to
+avoid multi-gigabyte scheduler checkpoints. `SIGTERM` finishes the active QD
+iteration and saves a final archive and summary row, which also makes
+Slurm time-limit termination recoverable. Set `--save_scheduler=True` only when
+full optimizer/emitter restart state is worth the storage cost.
+
+Branch-policy evaluation uses common reset scenarios by default: every
+contiguous policy block receives the same ordered cube and goal samples for a
+given evaluation. The scenario seed advances between evaluations so search
+does not optimize a single fixed batch. This removes reset-placement luck from
+comparisons inside an XNES population while retaining MJLab's observation and
+startup domain randomization.
 
 The MJLab runner initializes the XNES gradient-coefficient center at zero,
 uses `SIGMA0=0.05`, and conservatively moves the learned mean for one PPO
