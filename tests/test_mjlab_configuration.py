@@ -165,6 +165,46 @@ def test_grip_orientation_arm_length_descriptors(monkeypatch):
         measures, torch.tensor([[1.0, 0.0], [0.0, 1.0]]))
 
 
+def test_grip_orientation_elbow_extension_descriptors(monkeypatch):
+    class FakeScene(dict):
+        env_origins = torch.zeros(2, 3)
+
+    robot = SimpleNamespace(
+        data=SimpleNamespace(
+            site_quat_w=torch.tensor([
+                [[1.0, 0.0, 0.0, 0.0]],
+                [[0.0, 1.0, 0.0, 0.0]],
+            ]),
+            joint_pos=torch.tensor([[0.0], [torch.pi]]),
+        ),
+        find_joints=lambda _name: ([0], ["joint3"]),
+    )
+    object_data = SimpleNamespace(root_link_pos_w=torch.zeros(2, 3))
+    command = SimpleNamespace(object=SimpleNamespace(data=object_data))
+    asset_cfg = SimpleNamespace(name="robot", site_ids=[0])
+    env = SimpleNamespace(
+        num_envs=2,
+        scene=FakeScene(robot=robot),
+        command_manager=SimpleNamespace(get_term=lambda _name: command),
+        reward_manager=SimpleNamespace(get_term_cfg=lambda _name:
+                                       SimpleNamespace(params={
+                                           "asset_cfg": asset_cfg,
+                                       })),
+    )
+    monkeypatch.setattr(
+        mjlab_env, "_raw_observation_term",
+        lambda _env, _name: torch.tensor([
+            [0.05, 0.0, 0.0],
+            [0.05, 0.0, 0.0],
+        ]))
+
+    tracker = mjlab_env.GripOrientationElbowExtensionMeasures(env)
+    tracker.reset()
+
+    torch.testing.assert_close(
+        tracker.update(), torch.tensor([[1.0, 0.0], [0.0, 1.0]]))
+
+
 def test_xnes_can_initialize_gradient_coefficients_at_zero():
     optimizer = XNES(
         solution_dim=3,

@@ -227,10 +227,11 @@ def parse_args():
     parser.add_argument('--episode_length_s', type=float, default=None,
                         help='Override the simulator episode horizon in seconds')
     parser.add_argument('--mjlab_descriptor_mode',
-                        choices=['grip_orientation_arm_length',
+                        choices=['grip_orientation_elbow_extension',
+                                 'grip_orientation_arm_length',
                                  'approach_transport', 'motion_effort',
                                  'height_approach', 'progress'],
-                        default='grip_orientation_arm_length',
+                        default='grip_orientation_elbow_extension',
                         help='MJLab QD descriptor pair')
     parser.add_argument('--mjlab_motion_speed_reference', type=float,
                         default=None,

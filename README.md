@@ -108,7 +108,7 @@ python -m pip install -r requirements-mjlab.txt
 Run a small PPO smoke test:
 
 ```bash
-python -m ppga.RL.train_ppo --env_name=lift_cube --env_type=mjlab --env_batch_size=256 --rollout_length=24 --total_timesteps=262144 --num_minibatches=4 --update_epochs=5 --learning_rate=0.0001 --entropy_coef=0.005 --target_kl=0.01 --adaptive_kl=True --norm_adv_per_minibatch=False --mixed_precision=False --normalize_obs=True --action_transform=none --action_std_parameterization=direct --initial_action_std=0.5 --actor_hidden_dims 512 256 128 --num_dims=2 --value_bootstrap=True --mjlab_fixed_goal=False --mjlab_disable_curriculum=True --mjlab_command_resampling_time=40 --mjlab_terminate_on_success=True --mjlab_success_bonus=50 --mjlab_success_max_object_speed=0.15 --mjlab_descriptor_mode=grip_orientation_arm_length
+python -m ppga.RL.train_ppo --env_name=lift_cube --env_type=mjlab --env_batch_size=256 --rollout_length=24 --total_timesteps=262144 --num_minibatches=4 --update_epochs=5 --learning_rate=0.0001 --entropy_coef=0.005 --target_kl=0.01 --adaptive_kl=True --norm_adv_per_minibatch=False --mixed_precision=False --normalize_obs=True --action_transform=none --action_std_parameterization=direct --initial_action_std=0.5 --actor_hidden_dims 512 256 128 --num_dims=2 --value_bootstrap=True --mjlab_fixed_goal=False --mjlab_disable_curriculum=True --mjlab_command_resampling_time=40 --mjlab_terminate_on_success=True --mjlab_success_bonus=50 --mjlab_success_max_object_speed=0.15 --mjlab_descriptor_mode=grip_orientation_elbow_extension
 ```
 
 To verify the installed simulator and task independently of PPGA's PPO, run
@@ -180,12 +180,18 @@ the task's 5 cm goal tolerance and moving no faster than 0.15 m/s. Success
 terminates the episode and adds a one-time reward of 50, eliminating the old
 incentive to accumulate reward by holding the cube motionless at the goal.
 
-The default `grip_orientation_arm_length` descriptors in `[0, 1]` describe
-successful grasp posture without rewarding slow movement. Grip orientation is
-the wrist approach-axis tilt: zero points down and one points up. Arm length is
-base-to-grasp-site extension, with 20--50 cm mapped to the descriptor range.
-Both use the closest pre-transport pose to the cube. The 75%
+The default `grip_orientation_elbow_extension` descriptors in `[0, 1]`
+describe successful grasp posture without rewarding slow movement. Grip
+orientation is the wrist approach-axis tilt: zero points down and one points
+up. Elbow extension is zero when folded and one near a straight arm. Both use
+the closest pre-transport pose to the cube. The 75%
 success gate prevents failed reaches from filling the archive.
+
+`grip_orientation_arm_length` remains available, but calibration showed that
+base-to-grasp-site distance mostly follows cube position and occupied one bin.
+The pretrained seed policies also cluster tightly in elbow extension; unlike
+arm length, however, elbow angle is directly controllable without changing the
+cube goal. A new PPGA run is needed to determine whether it expands this axis.
 
 Legacy `approach_transport` descriptors target visibly different manipulation
 paths. The first is the end effector's signed deviation
