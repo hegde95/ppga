@@ -27,7 +27,8 @@ def parse_args():
     parser.add_argument('--policies_per_batch', type=int, default=32)
     parser.add_argument('--seed', type=int, default=20260907)
     parser.add_argument('--descriptor_mode',
-                        choices=['approach_transport', 'motion_effort',
+                        choices=['grip_orientation_arm_length',
+                                 'approach_transport', 'motion_effort',
                                  'height_approach', 'progress'],
                         default=None,
                         help='Optional override; defaults to the saved config')

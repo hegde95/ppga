@@ -169,6 +169,101 @@ class ApproachTransportMeasures:
                             transport.clamp(0.0, 1.0)), dim=-1)
 
 
+class GripOrientationArmLengthMeasures:
+    """Track grasp-time wrist tilt and arm extension descriptors."""
+
+    def __init__(self, env, arm_length_min=0.20, arm_length_max=0.50,
+                 transport_start_distance=0.03):
+        self.env = env
+        self.arm_length_min = float(arm_length_min)
+        self.arm_length_max = float(arm_length_max)
+        self.transport_start_distance = float(transport_start_distance)
+        if self.arm_length_min < 0:
+            raise ValueError("mjlab_arm_length_min cannot be negative")
+        if self.arm_length_max <= self.arm_length_min:
+            raise ValueError(
+                "mjlab_arm_length_max must exceed mjlab_arm_length_min")
+        if self.transport_start_distance <= 0:
+            raise ValueError(
+                "mjlab_transport_start_distance must be positive")
+
+        reaching_cfg = env.reward_manager.get_term_cfg("lift")
+        asset_cfg = reaching_cfg.params["asset_cfg"]
+        self.robot = env.scene[asset_cfg.name]
+        if len(asset_cfg.site_ids) != 1:
+            raise ValueError(
+                "grip descriptors require exactly one end-effector site")
+        self.grasp_site_id = asset_cfg.site_ids[0]
+
+        device = env.scene.env_origins.device
+        num_envs = env.num_envs
+        self.initial_object_pos = torch.zeros(num_envs, 3, device=device)
+        self.closest_distance = torch.full(
+            (num_envs,), float("inf"), device=device)
+        self.grip_orientation = torch.full(
+            (num_envs,), 0.5, device=device)
+        self.arm_length = torch.full((num_envs,), 0.5, device=device)
+        self.transport_started = torch.zeros(
+            num_envs, dtype=torch.bool, device=device)
+
+    def reset(self, env_ids=None):
+        if env_ids is None:
+            env_ids = torch.arange(
+                self.env.num_envs, device=self.initial_object_pos.device)
+        command = self.env.command_manager.get_term("lift_height")
+        self.initial_object_pos[env_ids] = (
+            command.object.data.root_link_pos_w[env_ids])
+        self.closest_distance[env_ids] = float("inf")
+        self.grip_orientation[env_ids] = 0.5
+        self.arm_length[env_ids] = 0.5
+        self.transport_started[env_ids] = False
+
+    @staticmethod
+    def _rotate_local_z(quaternion: torch.Tensor) -> torch.Tensor:
+        """Return local positive-z axis in world coordinates for wxyz quats."""
+        w, x, y, z = quaternion.unbind(dim=-1)
+        return torch.stack((2.0 * (x * z + w * y),
+                            2.0 * (y * z - w * x),
+                            1.0 - 2.0 * (x.square() + y.square())), dim=-1)
+
+    def update(self) -> torch.Tensor:
+        command = self.env.command_manager.get_term("lift_height")
+        object_pos = command.object.data.root_link_pos_w
+        ee_to_cube = _raw_observation_term(self.env, "ee_to_cube")
+        distance = torch.linalg.vector_norm(ee_to_cube, dim=-1)
+
+        ee_pos = self.robot.data.site_pos_w[:, self.grasp_site_id]
+        ee_quat = self.robot.data.site_quat_w[:, self.grasp_site_id]
+        grip_axis = self._rotate_local_z(ee_quat)
+        # Zero means a downward-pointing grasp axis; one means upward. This
+        # measures wrist approach geometry without rewarding slow motion.
+        grip_tilt = torch.acos(
+            (-grip_axis[:, 2]).clamp(-1.0, 1.0)) / torch.pi
+        arm_length = torch.linalg.vector_norm(
+            ee_pos - self.robot.data.root_link_pos_w, dim=-1)
+        normalized_arm_length = (
+            (arm_length - self.arm_length_min)
+            / (self.arm_length_max - self.arm_length_min)).clamp(0.0, 1.0)
+
+        closer = (~self.transport_started) & (distance < self.closest_distance)
+        self.closest_distance = torch.where(
+            closer, distance, self.closest_distance)
+        self.grip_orientation = torch.where(
+            closer, grip_tilt, self.grip_orientation)
+        self.arm_length = torch.where(
+            closer, normalized_arm_length, self.arm_length)
+
+        object_displacement = torch.linalg.vector_norm(
+            object_pos - self.initial_object_pos, dim=-1)
+        self.transport_started |= (
+            object_displacement >= self.transport_start_distance)
+        return self.measures()
+
+    def measures(self) -> torch.Tensor:
+        return torch.stack((self.grip_orientation.clamp(0.0, 1.0),
+                            self.arm_length.clamp(0.0, 1.0)), dim=-1)
+
+
 def _motion_effort_parameters(env, speed_reference=None):
     """Resolve YAM arm joints and physical normalization constants."""
     robot = env.scene["robot"]
@@ -211,17 +306,17 @@ def lift_cube_measures(env, mode: str = "approach_transport", *,
                        effort_limits=None) -> torch.Tensor:
     """Return dense manipulation descriptors in ``[0, 1]``.
 
-    ``approach_transport`` is stateful and is handled by
-    :class:`ApproachTransportMeasures`. ``motion_effort`` captures manipulation
+    ``approach_transport`` and ``grip_orientation_arm_length`` are stateful
+    and handled by episode trackers. ``motion_effort`` captures manipulation
     style using normalized arm-joint speed and actuator effort.
     ``height_approach`` separates task progress (normalized cube height) from
     behavior (which lateral side of the cube the end effector approaches).
     ``progress`` preserves the original reaching / goal-proximity measures for
     loading or reproducing older archives.
     """
-    if mode == "approach_transport":
+    if mode in {"approach_transport", "grip_orientation_arm_length"}:
         raise ValueError(
-            "approach_transport measures require an episode tracker")
+            f"{mode} measures require an episode tracker")
     if mode == "motion_effort":
         if (arm_joint_ids is None or speed_reference is None
                 or effort_limits is None):
@@ -272,7 +367,9 @@ class QDRewardMJLab:
                  motion_speed_reference=None,
                  transport_start_distance=0.03,
                  approach_deviation_reference=0.05,
-                 transport_deviation_reference=0.15):
+                 transport_deviation_reference=0.15,
+                 arm_length_min=0.20,
+                 arm_length_max=0.50):
         self.env = env
         if env.cfg.auto_reset:
             raise ValueError("QDRewardMJLab requires env.cfg.auto_reset=False")
@@ -294,20 +391,27 @@ class QDRewardMJLab:
         self.arm_joint_ids = None
         self.motion_speed_reference = None
         self.arm_effort_limits = None
-        self.approach_transport_tracker = None
+        self.episode_measure_tracker = None
         if descriptor_mode == "motion_effort":
             (self.arm_joint_ids, self.motion_speed_reference,
              self.arm_effort_limits) = _motion_effort_parameters(
                  env, motion_speed_reference)
         elif descriptor_mode == "approach_transport":
-            self.approach_transport_tracker = ApproachTransportMeasures(
+            self.episode_measure_tracker = ApproachTransportMeasures(
                 env,
                 transport_start_distance=transport_start_distance,
                 approach_deviation_reference=(
                     approach_deviation_reference),
                 transport_deviation_reference=(
                     transport_deviation_reference))
-            self.approach_transport_tracker.reset()
+        elif descriptor_mode == "grip_orientation_arm_length":
+            self.episode_measure_tracker = GripOrientationArmLengthMeasures(
+                env,
+                arm_length_min=arm_length_min,
+                arm_length_max=arm_length_max,
+                transport_start_distance=transport_start_distance)
+        if self.episode_measure_tracker is not None:
+            self.episode_measure_tracker.reset()
 
     @property
     def unwrapped(self):
@@ -318,8 +422,8 @@ class QDRewardMJLab:
 
     def reset(self, **kwargs):
         observation, info = self.env.reset(**kwargs)
-        if self.approach_transport_tracker is not None:
-            self.approach_transport_tracker.reset(kwargs.get("env_ids"))
+        if self.episode_measure_tracker is not None:
+            self.episode_measure_tracker.reset(kwargs.get("env_ids"))
         return canonical_policy_observation(observation), info
 
     def reset_with_common_random_numbers(self, num_groups: int, seed: int):
@@ -346,8 +450,8 @@ class QDRewardMJLab:
                 policy_buffer = torch.empty_like(group_policy)
             policy_buffer[env_ids] = group_policy[env_ids]
 
-        if self.approach_transport_tracker is not None:
-            self.approach_transport_tracker.reset()
+        if self.episode_measure_tracker is not None:
+            self.episode_measure_tracker.reset()
         return {"policy": policy_buffer}, info
 
     def step(self, action):
@@ -359,8 +463,8 @@ class QDRewardMJLab:
             info["log"] = dict(info["log"])
         done = (terminated | truncated).reshape(-1)
         final_policy_obs = policy_observation(terminal_obs).clone()
-        if self.approach_transport_tracker is not None:
-            measures = self.approach_transport_tracker.update()
+        if self.episode_measure_tracker is not None:
+            measures = self.episode_measure_tracker.update()
         else:
             measures = lift_cube_measures(
                 self.env,
@@ -397,8 +501,8 @@ class QDRewardMJLab:
         if done.any():
             env_ids = done.nonzero(as_tuple=False).squeeze(-1)
             next_obs, reset_info = self.env.reset(env_ids=env_ids)
-            if self.approach_transport_tracker is not None:
-                self.approach_transport_tracker.reset(env_ids)
+            if self.episode_measure_tracker is not None:
+                self.episode_measure_tracker.reset(env_ids)
             # Preserve episode logging produced by the terminal step.
             if "log" not in info and "log" in reset_info:
                 info["log"] = reset_info["log"]
@@ -519,5 +623,7 @@ def make_vec_env_mjlab(cfg):
         approach_deviation_reference=getattr(
             cfg, "mjlab_approach_deviation_reference", 0.05),
         transport_deviation_reference=getattr(
-            cfg, "mjlab_transport_deviation_reference", 0.15))
+            cfg, "mjlab_transport_deviation_reference", 0.15),
+        arm_length_min=getattr(cfg, "mjlab_arm_length_min", 0.20),
+        arm_length_max=getattr(cfg, "mjlab_arm_length_max", 0.50))
     return env

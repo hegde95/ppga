@@ -17,7 +17,9 @@ python -m ppga.RL.train_ppo \
   --mjlab_terminate_on_success=True \
   --mjlab_success_bonus=50.0 \
   --mjlab_success_max_object_speed=0.15 \
-  --mjlab_descriptor_mode=approach_transport \
+  --mjlab_descriptor_mode=grip_orientation_arm_length \
+  --mjlab_arm_length_min=0.20 \
+  --mjlab_arm_length_max=0.50 \
   --mjlab_transport_start_distance=0.03 \
   --mjlab_transport_deviation_reference=0.15 \
   --num_dims=2 \

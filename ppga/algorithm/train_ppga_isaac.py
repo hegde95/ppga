@@ -227,9 +227,10 @@ def parse_args():
     parser.add_argument('--episode_length_s', type=float, default=None,
                         help='Override the simulator episode horizon in seconds')
     parser.add_argument('--mjlab_descriptor_mode',
-                        choices=['approach_transport', 'motion_effort',
+                        choices=['grip_orientation_arm_length',
+                                 'approach_transport', 'motion_effort',
                                  'height_approach', 'progress'],
-                        default='approach_transport',
+                        default='grip_orientation_arm_length',
                         help='MJLab QD descriptor pair')
     parser.add_argument('--mjlab_motion_speed_reference', type=float,
                         default=None,
@@ -263,6 +264,10 @@ def parse_args():
     parser.add_argument('--mjlab_transport_deviation_reference', type=float,
                         default=0.15,
                         help='Peak signed transport deviation mapped to descriptor endpoints')
+    parser.add_argument('--mjlab_arm_length_min', type=float, default=0.20,
+                        help='Arm length in meters mapped to descriptor zero')
+    parser.add_argument('--mjlab_arm_length_max', type=float, default=0.50,
+                        help='Arm length in meters mapped to descriptor one')
 
     # QD Params
     parser.add_argument("--num_emitters",
@@ -940,6 +945,11 @@ def main():
     if cfg.mjlab_transport_deviation_reference <= 0:
         raise ValueError(
             'mjlab_transport_deviation_reference must be positive')
+    if cfg.mjlab_arm_length_min < 0:
+        raise ValueError('mjlab_arm_length_min cannot be negative')
+    if cfg.mjlab_arm_length_max <= cfg.mjlab_arm_length_min:
+        raise ValueError(
+            'mjlab_arm_length_max must exceed mjlab_arm_length_min')
     if cfg.eval_common_seed_offset < 0:
         raise ValueError('eval_common_seed_offset cannot be negative')
     cfg.num_emitters = 1

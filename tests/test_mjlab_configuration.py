@@ -111,13 +111,58 @@ def test_common_random_reset_replays_seed_for_each_policy_group(monkeypatch):
             return {"actor": torch.zeros(6, 4)}, {}
 
     wrapper = SimpleNamespace(
-        env=FakeEnv(), approach_transport_tracker=None)
+        env=FakeEnv(), episode_measure_tracker=None)
     observation, _ = mjlab_env.QDRewardMJLab.reset_with_common_random_numbers(
         wrapper, num_groups=3, seed=1234)
 
     assert reset_seeds == [1234, 1234, 1234]
     assert reset_ids == [[0, 1], [2, 3], [4, 5]]
     assert observation["policy"].shape == (6, 4)
+
+
+def test_grip_orientation_arm_length_descriptors(monkeypatch):
+    class FakeScene(dict):
+        env_origins = torch.zeros(2, 3)
+
+    robot = SimpleNamespace(data=SimpleNamespace(
+        root_link_pos_w=torch.zeros(2, 3),
+        site_pos_w=torch.tensor([
+            [[0.25, 0.0, 0.0]],
+            [[0.75, 0.0, 0.0]],
+        ]),
+        site_quat_w=torch.tensor([
+            [[1.0, 0.0, 0.0, 0.0]],
+            [[0.0, 1.0, 0.0, 0.0]],
+        ]),
+    ))
+    object_data = SimpleNamespace(root_link_pos_w=torch.zeros(2, 3))
+    command = SimpleNamespace(object=SimpleNamespace(data=object_data))
+    asset_cfg = SimpleNamespace(name="robot", site_ids=[0])
+    scene = FakeScene(robot=robot)
+    env = SimpleNamespace(
+        num_envs=2,
+        scene=scene,
+        command_manager=SimpleNamespace(get_term=lambda _name: command),
+        reward_manager=SimpleNamespace(get_term_cfg=lambda _name:
+                                       SimpleNamespace(params={
+                                           "reaching_std": 0.2,
+                                           "asset_cfg": asset_cfg,
+                                       })),
+    )
+    monkeypatch.setattr(
+        mjlab_env, "_raw_observation_term",
+        lambda _env, _name: torch.tensor([
+            [0.05, 0.0, 0.0],
+            [0.05, 0.0, 0.0],
+        ]))
+
+    tracker = mjlab_env.GripOrientationArmLengthMeasures(
+        env, arm_length_min=0.25, arm_length_max=0.75)
+    tracker.reset()
+    measures = tracker.update()
+
+    torch.testing.assert_close(
+        measures, torch.tensor([[1.0, 0.0], [0.0, 1.0]]))
 
 
 def test_xnes_can_initialize_gradient_coefficients_at_zero():

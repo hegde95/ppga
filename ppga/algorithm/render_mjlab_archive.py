@@ -17,8 +17,8 @@ from ppga.algorithm.mjlab_archive_utils import (
     archive_solution_columns, metadata_success_rate,
     restore_archive_actor, select_representative_elites)
 from ppga.envs.mjlab.mjlab_env import (
-    ApproachTransportMeasures, _motion_effort_parameters, lift_cube_measures,
-    make_base_env_mjlab)
+    ApproachTransportMeasures, GripOrientationArmLengthMeasures,
+    _motion_effort_parameters, lift_cube_measures, make_base_env_mjlab)
 from ppga.envs.qd_env import policy_observation, policy_observation_space
 
 
@@ -79,9 +79,9 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     descriptor_mode = getattr(
-        cfg, 'mjlab_descriptor_mode', 'approach_transport')
+        cfg, 'mjlab_descriptor_mode', 'grip_orientation_arm_length')
     descriptor_kwargs = {}
-    approach_transport_tracker = None
+    episode_measure_tracker = None
     if descriptor_mode == 'motion_effort':
         arm_ids, speed_reference, effort_limits = _motion_effort_parameters(
             env, getattr(cfg, 'mjlab_motion_speed_reference', None))
@@ -91,7 +91,7 @@ def main():
             'effort_limits': effort_limits,
         }
     elif descriptor_mode == 'approach_transport':
-        approach_transport_tracker = ApproachTransportMeasures(
+        episode_measure_tracker = ApproachTransportMeasures(
             env,
             transport_start_distance=getattr(
                 cfg, 'mjlab_transport_start_distance', 0.03),
@@ -99,6 +99,13 @@ def main():
                 cfg, 'mjlab_approach_deviation_reference', 0.05),
             transport_deviation_reference=getattr(
                 cfg, 'mjlab_transport_deviation_reference', 0.15))
+    elif descriptor_mode == 'grip_orientation_arm_length':
+        episode_measure_tracker = GripOrientationArmLengthMeasures(
+            env,
+            arm_length_min=getattr(cfg, 'mjlab_arm_length_min', 0.20),
+            arm_length_max=getattr(cfg, 'mjlab_arm_length_max', 0.50),
+            transport_start_distance=getattr(
+                cfg, 'mjlab_transport_start_distance', 0.03))
 
     rows = []
     try:
@@ -109,8 +116,8 @@ def main():
             for episode in range(args.episodes_per_policy):
                 episode_seed = args.seed + episode
                 observation, _ = env.reset(seed=episode_seed)
-                if approach_transport_tracker is not None:
-                    approach_transport_tracker.reset()
+                if episode_measure_tracker is not None:
+                    episode_measure_tracker.reset()
                 observation = policy_observation(observation).to(device)
                 frames = []
                 initial_frame = env.render()
@@ -135,8 +142,8 @@ def main():
                         action.to(torch.float32))
                     observation = policy_observation(observation).to(device)
                     reward_total += float(reward[0].item())
-                    if approach_transport_tracker is not None:
-                        rollout_measures = approach_transport_tracker.update()[0]
+                    if episode_measure_tracker is not None:
+                        rollout_measures = episode_measure_tracker.update()[0]
                     else:
                         rollout_measures = lift_cube_measures(
                             env, descriptor_mode, **descriptor_kwargs)[0]
@@ -163,9 +170,9 @@ def main():
                         break
 
                 steps = step + 1
-                if approach_transport_tracker is not None:
+                if episode_measure_tracker is not None:
                     final_rollout_measures = (
-                        approach_transport_tracker.measures()[0])
+                        episode_measure_tracker.measures()[0])
                 else:
                     final_rollout_measures = measure_total / steps
                 filename = (
