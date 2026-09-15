@@ -269,6 +269,18 @@ def parse_args():
                         help='Arm length in meters mapped to descriptor zero')
     parser.add_argument('--mjlab_arm_length_max', type=float, default=0.50,
                         help='Arm length in meters mapped to descriptor one')
+    parser.add_argument('--mjlab_grip_tilt_min_degrees', type=float,
+                        default=15.0,
+                        help='Grip tilt in degrees mapped to descriptor zero')
+    parser.add_argument('--mjlab_grip_tilt_max_degrees', type=float,
+                        default=45.0,
+                        help='Grip tilt in degrees mapped to descriptor one')
+    parser.add_argument('--mjlab_elbow_extension_min_degrees', type=float,
+                        default=45.0,
+                        help='Elbow angle in degrees mapped to descriptor zero')
+    parser.add_argument('--mjlab_elbow_extension_max_degrees', type=float,
+                        default=65.0,
+                        help='Elbow angle in degrees mapped to descriptor one')
 
     # QD Params
     parser.add_argument("--num_emitters",
@@ -951,6 +963,13 @@ def main():
     if cfg.mjlab_arm_length_max <= cfg.mjlab_arm_length_min:
         raise ValueError(
             'mjlab_arm_length_max must exceed mjlab_arm_length_min')
+    if cfg.mjlab_grip_tilt_max_degrees <= cfg.mjlab_grip_tilt_min_degrees:
+        raise ValueError(
+            'mjlab_grip_tilt_max_degrees must exceed its minimum')
+    if (cfg.mjlab_elbow_extension_max_degrees
+            <= cfg.mjlab_elbow_extension_min_degrees):
+        raise ValueError(
+            'mjlab_elbow_extension_max_degrees must exceed its minimum')
     if cfg.eval_common_seed_offset < 0:
         raise ValueError('eval_common_seed_offset cannot be negative')
     cfg.num_emitters = 1

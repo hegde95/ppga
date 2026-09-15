@@ -267,12 +267,29 @@ class GripOrientationArmLengthMeasures:
 class GripOrientationElbowExtensionMeasures:
     """Track grasp-time wrist tilt and elbow extension descriptors."""
 
-    def __init__(self, env, transport_start_distance=0.03):
+    def __init__(self, env, transport_start_distance=0.03,
+                 grip_tilt_min_degrees=15.0,
+                 grip_tilt_max_degrees=45.0,
+                 elbow_extension_min_degrees=45.0,
+                 elbow_extension_max_degrees=65.0):
         self.env = env
         self.transport_start_distance = float(transport_start_distance)
         if self.transport_start_distance <= 0:
             raise ValueError(
                 "mjlab_transport_start_distance must be positive")
+        self.grip_tilt_min_degrees = float(grip_tilt_min_degrees)
+        self.grip_tilt_max_degrees = float(grip_tilt_max_degrees)
+        self.elbow_extension_min_degrees = float(
+            elbow_extension_min_degrees)
+        self.elbow_extension_max_degrees = float(
+            elbow_extension_max_degrees)
+        if self.grip_tilt_max_degrees <= self.grip_tilt_min_degrees:
+            raise ValueError(
+                "grip tilt maximum must exceed its minimum")
+        if (self.elbow_extension_max_degrees
+                <= self.elbow_extension_min_degrees):
+            raise ValueError(
+                "elbow extension maximum must exceed its minimum")
 
         reaching_cfg = env.reward_manager.get_term_cfg("lift")
         asset_cfg = reaching_cfg.params["asset_cfg"]
@@ -318,12 +335,20 @@ class GripOrientationElbowExtensionMeasures:
 
         ee_quat = self.robot.data.site_quat_w[:, self.grasp_site_id]
         grip_axis = GripOrientationArmLengthMeasures._rotate_local_z(ee_quat)
-        grip_tilt = torch.acos(
-            (-grip_axis[:, 2]).clamp(-1.0, 1.0)) / torch.pi
+        grip_tilt_degrees = torch.rad2deg(torch.acos(
+            (-grip_axis[:, 2]).clamp(-1.0, 1.0)))
+        grip_tilt = (
+            (grip_tilt_degrees - self.grip_tilt_min_degrees)
+            / (self.grip_tilt_max_degrees - self.grip_tilt_min_degrees)
+        ).clamp(0.0, 1.0)
         elbow_angle = self.robot.data.joint_pos[:, self.elbow_joint_id]
-        # YAM joint3 is folded at zero and straight near pi radians.
+        # YAM joint3 is folded at zero and extends as its angle increases.
         elbow_extension = (
-            1.0 - (elbow_angle - torch.pi).abs() / torch.pi).clamp(0.0, 1.0)
+            (torch.rad2deg(elbow_angle)
+             - self.elbow_extension_min_degrees)
+            / (self.elbow_extension_max_degrees
+               - self.elbow_extension_min_degrees)
+        ).clamp(0.0, 1.0)
 
         closer = (~self.transport_started) & (distance < self.closest_distance)
         self.closest_distance = torch.where(
@@ -450,7 +475,11 @@ class QDRewardMJLab:
                  approach_deviation_reference=0.05,
                  transport_deviation_reference=0.15,
                  arm_length_min=0.20,
-                 arm_length_max=0.50):
+                 arm_length_max=0.50,
+                 grip_tilt_min_degrees=15.0,
+                 grip_tilt_max_degrees=45.0,
+                 elbow_extension_min_degrees=45.0,
+                 elbow_extension_max_degrees=65.0):
         self.env = env
         if env.cfg.auto_reset:
             raise ValueError("QDRewardMJLab requires env.cfg.auto_reset=False")
@@ -495,7 +524,13 @@ class QDRewardMJLab:
             self.episode_measure_tracker = (
                 GripOrientationElbowExtensionMeasures(
                     env,
-                    transport_start_distance=transport_start_distance))
+                    transport_start_distance=transport_start_distance,
+                    grip_tilt_min_degrees=grip_tilt_min_degrees,
+                    grip_tilt_max_degrees=grip_tilt_max_degrees,
+                    elbow_extension_min_degrees=(
+                        elbow_extension_min_degrees),
+                    elbow_extension_max_degrees=(
+                        elbow_extension_max_degrees)))
         if self.episode_measure_tracker is not None:
             self.episode_measure_tracker.reset()
 
@@ -711,5 +746,13 @@ def make_vec_env_mjlab(cfg):
         transport_deviation_reference=getattr(
             cfg, "mjlab_transport_deviation_reference", 0.15),
         arm_length_min=getattr(cfg, "mjlab_arm_length_min", 0.20),
-        arm_length_max=getattr(cfg, "mjlab_arm_length_max", 0.50))
+        arm_length_max=getattr(cfg, "mjlab_arm_length_max", 0.50),
+        grip_tilt_min_degrees=getattr(
+            cfg, "mjlab_grip_tilt_min_degrees", 15.0),
+        grip_tilt_max_degrees=getattr(
+            cfg, "mjlab_grip_tilt_max_degrees", 45.0),
+        elbow_extension_min_degrees=getattr(
+            cfg, "mjlab_elbow_extension_min_degrees", 45.0),
+        elbow_extension_max_degrees=getattr(
+            cfg, "mjlab_elbow_extension_max_degrees", 65.0))
     return env

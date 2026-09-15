@@ -182,10 +182,15 @@ incentive to accumulate reward by holding the cube motionless at the goal.
 
 The default `grip_orientation_elbow_extension` descriptors in `[0, 1]`
 describe successful grasp posture without rewarding slow movement. Grip
-orientation is the wrist approach-axis tilt: zero points down and one points
-up. Elbow extension is zero when folded and one near a straight arm. Both use
-the closest pre-transport pose to the cube. The 75%
+orientation measures wrist-axis tilt away from downward; larger values mean a
+more oblique grip. Larger elbow values mean a more extended arm. Both use the
+closest pre-transport pose to the cube. The 75%
 success gate prevents failed reaches from filling the archive.
+
+For the lift task, grip tilt is calibrated over 15--45 degrees and elbow
+extension over 45--65 degrees. Values outside those task-feasible windows are
+clipped. This preserves the physical features while giving DQD useful measure
+gradients and archive resolution.
 
 `grip_orientation_arm_length` remains available, but calibration showed that
 base-to-grasp-site distance mostly follows cube position and occupied one bin.

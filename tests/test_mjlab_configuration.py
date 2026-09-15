@@ -172,10 +172,10 @@ def test_grip_orientation_elbow_extension_descriptors(monkeypatch):
     robot = SimpleNamespace(
         data=SimpleNamespace(
             site_quat_w=torch.tensor([
-                [[1.0, 0.0, 0.0, 0.0]],
-                [[0.0, 1.0, 0.0, 0.0]],
+                [[0.13052619, 0.99144486, 0.0, 0.0]],
+                [[0.38268343, 0.92387953, 0.0, 0.0]],
             ]),
-            joint_pos=torch.tensor([[0.0], [torch.pi]]),
+            joint_pos=torch.deg2rad(torch.tensor([[45.0], [65.0]])),
         ),
         find_joints=lambda _name: ([0], ["joint3"]),
     )
@@ -202,7 +202,7 @@ def test_grip_orientation_elbow_extension_descriptors(monkeypatch):
     tracker.reset()
 
     torch.testing.assert_close(
-        tracker.update(), torch.tensor([[1.0, 0.0], [0.0, 1.0]]))
+        tracker.update(), torch.tensor([[0.0, 0.0], [1.0, 1.0]]))
 
 
 def test_xnes_can_initialize_gradient_coefficients_at_zero():

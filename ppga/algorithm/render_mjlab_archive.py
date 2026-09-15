@@ -134,7 +134,15 @@ def main():
         episode_measure_tracker = GripOrientationElbowExtensionMeasures(
             env,
             transport_start_distance=getattr(
-                cfg, 'mjlab_transport_start_distance', 0.03))
+                cfg, 'mjlab_transport_start_distance', 0.03),
+            grip_tilt_min_degrees=getattr(
+                cfg, 'mjlab_grip_tilt_min_degrees', 15.0),
+            grip_tilt_max_degrees=getattr(
+                cfg, 'mjlab_grip_tilt_max_degrees', 45.0),
+            elbow_extension_min_degrees=getattr(
+                cfg, 'mjlab_elbow_extension_min_degrees', 45.0),
+            elbow_extension_max_degrees=getattr(
+                cfg, 'mjlab_elbow_extension_max_degrees', 65.0))
 
     rows = []
     try:

@@ -29,6 +29,10 @@ python -m ppga.algorithm.train_ppga_isaac \
   --mjlab_success_bonus=50.0 \
   --mjlab_success_max_object_speed=0.15 \
   --mjlab_descriptor_mode=grip_orientation_elbow_extension \
+  --mjlab_grip_tilt_min_degrees=15.0 \
+  --mjlab_grip_tilt_max_degrees=45.0 \
+  --mjlab_elbow_extension_min_degrees=45.0 \
+  --mjlab_elbow_extension_max_degrees=65.0 \
   --mjlab_transport_start_distance=0.03 \
   --mjlab_approach_deviation_reference=0.05 \
   --mjlab_transport_deviation_reference=0.15 \
