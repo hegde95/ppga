@@ -108,7 +108,7 @@ python -m pip install -r requirements-mjlab.txt
 Run a small PPO smoke test:
 
 ```bash
-python -m ppga.RL.train_ppo --env_name=lift_cube --env_type=mjlab --env_batch_size=256 --rollout_length=24 --total_timesteps=262144 --num_minibatches=4 --update_epochs=5 --learning_rate=0.0001 --entropy_coef=0.005 --target_kl=0.01 --adaptive_kl=True --norm_adv_per_minibatch=False --mixed_precision=False --normalize_obs=True --action_transform=none --action_std_parameterization=direct --initial_action_std=0.5 --actor_hidden_dims 512 256 128 --num_dims=2 --value_bootstrap=True --mjlab_fixed_goal=False --mjlab_disable_curriculum=True --mjlab_command_resampling_time=40 --mjlab_terminate_on_success=True --mjlab_success_bonus=50 --mjlab_success_max_object_speed=0.15 --mjlab_descriptor_mode=approach_transport
+python -m ppga.RL.train_ppo --env_name=lift_cube --env_type=mjlab --env_batch_size=256 --rollout_length=24 --total_timesteps=262144 --num_minibatches=4 --update_epochs=5 --learning_rate=0.0001 --entropy_coef=0.005 --target_kl=0.01 --adaptive_kl=True --norm_adv_per_minibatch=False --mixed_precision=False --normalize_obs=True --action_transform=none --action_std_parameterization=direct --initial_action_std=0.5 --actor_hidden_dims 512 256 128 --num_dims=2 --value_bootstrap=True --mjlab_fixed_goal=False --mjlab_disable_curriculum=True --mjlab_command_resampling_time=40 --mjlab_terminate_on_success=True --mjlab_success_bonus=50 --mjlab_success_max_object_speed=0.15 --mjlab_descriptor_mode=grip_orientation_arm_length
 ```
 
 To verify the installed simulator and task independently of PPGA's PPO, run
@@ -155,6 +155,9 @@ The native trainer is the preferred bootstrap path. Convert a successful
 RSL-RL checkpoint; the converter copies its MLP, per-joint standard deviations,
 and observation-normalization statistics:
 
+See [MJLab PPO comparison](docs/mjlab_ppo_comparison.md) for concise evidence
+and the remaining difference between PPGA PPO and RSL-RL PPO.
+
 ```bash
 python -m ppga.RL.convert_mjlab_rsl_checkpoint /path/to/model_999.pt /path/to/ppga_actor_model_999.pt
 INITIAL_ACTOR_CHECKPOINT=/path/to/ppga_actor_model_999.pt bash runners/local/train_ppga_mjlab_lift_cube.sh
@@ -177,8 +180,15 @@ the task's 5 cm goal tolerance and moving no faster than 0.15 m/s. Success
 terminates the episode and adds a one-time reward of 50, eliminating the old
 incentive to accumulate reward by holding the cube motionless at the goal.
 
-The default `approach_transport` descriptors in `[0, 1]` target visibly
-different manipulation paths. The first is the end effector's signed deviation
+The default `grip_orientation_arm_length` descriptors in `[0, 1]` describe
+successful grasp posture without rewarding slow movement. Grip orientation is
+the wrist approach-axis tilt: zero points down and one points up. Arm length is
+base-to-grasp-site extension, with 20--50 cm mapped to the descriptor range.
+Both use the closest pre-transport pose to the cube. The 75%
+success gate prevents failed reaches from filling the archive.
+
+Legacy `approach_transport` descriptors target visibly different manipulation
+paths. The first is the end effector's signed deviation
 from its episode-initial straight path to the cube, weighted toward samples
 near the cube. The second retains the cube's largest signed perpendicular
 deviation from its direct start-to-goal transport path after the cube has moved
@@ -186,8 +196,8 @@ deviation from its direct start-to-goal transport path after the cube has moved
 direct path. Approach deviations of 5 cm and transport deviations of 15 cm map
 to their respective descriptor endpoints. Terminal archive coordinates use
 these complete episode statistics rather than averages of intermediate
-estimates. `motion_effort`, `height_approach`, and `progress` remain available
-for reproducing older archives.
+estimates. `motion_effort`, `height_approach`, and `progress` also remain
+available for reproducing older archives.
 
 Task metrics are logged during PPO and stored in elite metadata. PPGA's
 `summary.csv` includes archive mean/max success rate, maximum object height,
