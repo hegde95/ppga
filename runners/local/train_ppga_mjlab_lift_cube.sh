@@ -11,6 +11,7 @@ LEARNING_RATE="${LEARNING_RATE:-0.0001}"
 CALC_GRADIENT_ITERS="${CALC_GRADIENT_ITERS:-10}"
 MOVE_MEAN_ITERS="${MOVE_MEAN_ITERS:-1}"
 USE_WANDB="${USE_WANDB:-False}"
+SAVE_SCHEDULER="${SAVE_SCHEDULER:-False}"
 INITIAL_ACTOR_CHECKPOINT="${INITIAL_ACTOR_CHECKPOINT:-}"
 INITIAL_ACTOR_ARGS=()
 if [[ -n "$INITIAL_ACTOR_CHECKPOINT" ]]; then
@@ -73,7 +74,7 @@ python -m ppga.algorithm.train_ppga_isaac \
   --threshold_min=0 \
   --archive_min_success_rate=0.75 \
   --log_arch_freq="${LOG_ARCH_FREQ:-10}" \
-  --save_scheduler=False \
+  --save_scheduler="$SAVE_SCHEDULER" \
   --save_heatmaps=True \
   --heatmap_freq=10 \
   --use_wandb="$USE_WANDB" \

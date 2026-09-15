@@ -164,6 +164,9 @@ INITIAL_ACTOR_CHECKPOINT=/path/to/ppga_actor_model_999.pt bash runners/local/tra
 sbatch --export=ALL,INITIAL_ACTOR_CHECKPOINT=/path/to/ppga_actor_model_999.pt runners/slurm/train_ppga_mjlab_lift_cube_slurm.sh
 ```
 
+For a long local run, set `SAVE_SCHEDULER=True` so checkpoints can resume the
+emitter state as well as restore archive elites.
+
 The PPGA runner also works without `INITIAL_ACTOR_CHECKPOINT` for a random
 initial mean. Both runners accept environment overrides such as `SEED=43`,
 `ENV_BATCH_SIZE=384`, `TOTAL_TIMESTEPS=1000000`, `POPSIZE=32`, `SIGMA0=0.05`,
