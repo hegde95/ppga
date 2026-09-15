@@ -18,6 +18,7 @@ from ppga.algorithm.mjlab_archive_utils import (
     restore_archive_actor, select_representative_elites)
 from ppga.envs.mjlab.mjlab_env import (
     ApproachTransportMeasures, GripOrientationArmLengthMeasures,
+    GripOrientationElbowExtensionMeasures,
     _motion_effort_parameters, lift_cube_measures, make_base_env_mjlab)
 from ppga.envs.qd_env import policy_observation, policy_observation_space
 
@@ -28,12 +29,21 @@ def parse_args():
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--output_dir', type=Path, required=True)
     parser.add_argument('--num_policies', type=int, default=5)
+    parser.add_argument(
+        '--archive_rows', type=int, nargs='*', default=None,
+        help='Optional zero-based archive row positions to render directly')
     parser.add_argument('--episodes_per_policy', type=int, default=1)
     parser.add_argument('--min_success_rate', type=float, default=0.5)
     parser.add_argument('--seed', type=int, default=20260907)
     parser.add_argument('--video_width', type=int, default=640)
     parser.add_argument('--video_height', type=int, default=480)
     parser.add_argument('--frame_stride', type=int, default=2)
+    parser.add_argument(
+        '--descriptor_mode',
+        choices=['grip_orientation_elbow_extension',
+                 'grip_orientation_arm_length', 'approach_transport',
+                 'motion_effort', 'height_approach', 'progress'],
+        default=None, help='Override the descriptor mode stored in the config')
     parser.add_argument(
         '--max_steps', type=int, default=None,
         help='Optional video truncation; defaults to one complete episode')
@@ -57,6 +67,8 @@ def main():
     cfg.capture_video = True
     cfg.video_width = args.video_width
     cfg.video_height = args.video_height
+    if args.descriptor_mode is not None:
+        cfg.mjlab_descriptor_mode = args.descriptor_mode
     cfg.mjlab_fixed_goal = getattr(cfg, 'mjlab_fixed_goal', False)
     cfg.mjlab_disable_curriculum = getattr(
         cfg, 'mjlab_disable_curriculum', True)
@@ -67,8 +79,20 @@ def main():
     if archive.empty:
         raise ValueError(f'Archive contains no elites: {args.archive}')
     solution_columns = archive_solution_columns(archive)
-    selected = select_representative_elites(
-        archive, args.num_policies, args.min_success_rate)
+    if args.archive_rows:
+        invalid_rows = [position for position in args.archive_rows
+                        if position < 0 or position >= len(archive)]
+        if invalid_rows:
+            raise ValueError(
+                f'archive row positions out of range: {invalid_rows}')
+        selected = [
+            (archive.iloc[position].name, archive.iloc[position],
+             f'requested_row_{position}')
+            for position in dict.fromkeys(args.archive_rows)
+        ]
+    else:
+        selected = select_representative_elites(
+            archive, args.num_policies, args.min_success_rate)
 
     env = make_base_env_mjlab(cfg)
     cfg.obs_shape = policy_observation_space(
@@ -79,7 +103,7 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     descriptor_mode = getattr(
-        cfg, 'mjlab_descriptor_mode', 'grip_orientation_arm_length')
+        cfg, 'mjlab_descriptor_mode', 'grip_orientation_elbow_extension')
     descriptor_kwargs = {}
     episode_measure_tracker = None
     if descriptor_mode == 'motion_effort':
@@ -104,6 +128,11 @@ def main():
             env,
             arm_length_min=getattr(cfg, 'mjlab_arm_length_min', 0.20),
             arm_length_max=getattr(cfg, 'mjlab_arm_length_max', 0.50),
+            transport_start_distance=getattr(
+                cfg, 'mjlab_transport_start_distance', 0.03))
+    elif descriptor_mode == 'grip_orientation_elbow_extension':
+        episode_measure_tracker = GripOrientationElbowExtensionMeasures(
+            env,
             transport_start_distance=getattr(
                 cfg, 'mjlab_transport_start_distance', 0.03))
 
