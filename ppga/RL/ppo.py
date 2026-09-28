@@ -109,7 +109,9 @@ class PPO:
                       initial_action_std=getattr(
                           cfg, 'initial_action_std', 1.0),
                       hidden_dims=getattr(
-                          cfg, 'actor_hidden_dims', (400, 200, 100))).to(
+                          cfg, 'actor_hidden_dims', (400, 200, 100)),
+                      activation=getattr(
+                          cfg, 'actor_activation', 'elu')).to(
                               self.device)
         self._agents = [agent]
         critic = QDCritic(self.obs_shape,
@@ -537,8 +539,11 @@ class PPO:
               start_update=0,
               initial_global_step=0,
               checkpoint_callback=None,
-              checkpoint_interval=0):
+              checkpoint_interval=0,
+              stop_callback=None):
         global_step = int(initial_global_step)
+        self.completed_updates = int(start_update)
+        self.completed_global_step = global_step
 
         if calculate_dqd_gradients:
             solution_params = self._agents[0].serialize()
@@ -561,7 +566,11 @@ class PPO:
                               'log'),
                       hidden_dims=getattr(
                           self.cfg, 'actor_hidden_dims',
-                          (400, 200, 100))).deserialize(params)
+                          (400, 200, 100)),
+                      activation=getattr(
+                          self.cfg,
+                          'actor_activation',
+                          'elu')).deserialize(params)
                 for params in agent_original_params
             ]
             for agent in agents:
@@ -593,6 +602,8 @@ class PPO:
 
         train_start = time.time()
         for update in range(int(start_update) + 1, num_updates + 1):
+            if stop_callback is not None and stop_callback():
+                break
             if self.cfg.anneal_lr:
                 frac = 1.0 - (update - 1.0) / max(num_updates, 1)
                 learning_rate = frac * self.cfg.learning_rate
@@ -607,6 +618,8 @@ class PPO:
             measure_reward_sum = torch.zeros(self.cfg.num_dims, device=self.device)
             measure_samples = 0
             reward_term_sums = {}
+            completed_episodes = 0
+            successful_episodes = 0
             termination_counts = {}
             task_metric_sums = {}
             task_metric_maxima = {}
@@ -649,6 +662,11 @@ class PPO:
                     reward = env_returns[1]
                     dones = env_returns[2] | env_returns[3] # terminated and truncated
                     infos = env_returns[4]
+                    completed_episodes += int(dones.sum().item())
+                    if 'episode_success' in infos.get(TASK_METRICS, {}):
+                        successful_episodes += int((
+                            infos[TASK_METRICS]['episode_success'].to(dones.device)
+                            * dones).sum().item())
                     if self.cfg.normalize_obs:
                         self.next_obs = self.vec_inference.vec_normalize_obs(
                             self.next_obs)
@@ -818,7 +836,9 @@ class PPO:
                         log.debug(
                             f'FPS={fps:.2f}, steps={global_step}, '
                             f'episodic_reward={episodic_reward:.3f}, '
-                            f'task_success={task_metric_sums.get("episode_success", 0.0) / max(task_metric_samples.get("episode_success", 0), 1):.3f}, '
+                            f'task_success={successful_episodes / completed_episodes if completed_episodes else np.nan:.3f}, '
+                            f'completed_episodes={completed_episodes}, '
+                            f'objects_placed_max={task_metric_maxima.get("objects_placed", np.nan):.0f}, '
                             f'object_height_max={task_metric_maxima.get("object_height", np.nan):.3f}, '
                             f'position_error_min={task_metric_minima.get("position_error", np.nan):.3f}, '
                             f'avg_logstd={float(avg_log_stddev):.3f}, '
@@ -922,6 +942,8 @@ class PPO:
                                 mean.mean().item(),
                         })
 
+            self.completed_updates = update
+            self.completed_global_step = global_step
             if (checkpoint_callback is not None and checkpoint_interval > 0
                     and update % checkpoint_interval == 0):
                 checkpoint_callback(self, update, global_step)
@@ -959,7 +981,9 @@ class PPO:
                               'log'),
                       hidden_dims=getattr(
                           self.cfg, 'actor_hidden_dims',
-                          (400, 200, 100))).deserialize(
+                          (400, 200, 100)),
+                      activation=getattr(
+                          self.cfg, 'actor_activation', 'elu')).deserialize(
                           agent_original_params[0]).to(self.device)
             ]
             self.vec_inference = VectorizedActor(original_agent, Actor,
@@ -986,7 +1010,8 @@ class PPO:
                  verbose=False,
                  obs_normalizer=None,
                  return_normalizer=None,
-                 deterministic=None):
+                 deterministic=None,
+                 return_episode_data=False):
         '''
         Evaluate all agents for one episode
         :param vec_agent: Vectorized agents for vectorized inference
@@ -1011,7 +1036,8 @@ class PPO:
             evaluation_seed = (
                 self.seed
                 + int(getattr(self.cfg, 'eval_common_seed_offset', 1000000))
-                + self._evaluation_reset_count)
+                + (0 if getattr(self.cfg, 'eval_fixed_scenarios', False)
+                   else self._evaluation_reset_count))
             reset_result = vec_env.reset_with_common_random_numbers(
                 vec_agent.num_models, evaluation_seed)
             self._evaluation_reset_count += 1
@@ -1096,18 +1122,39 @@ class PPO:
         measures = aggregate_episode_measures(
             measures_acc, traj_lengths.to(self.device), final_measures,
             final_measure_mask)
-        measures = measures.reshape(vec_agent.num_models,
-                                    num_envs // vec_agent.num_models,
-                                    -1).mean(dim=1).detach().cpu().numpy()
+        per_env_measures = measures.reshape(
+            vec_agent.num_models, num_envs // vec_agent.num_models, -1)
+        measure_means = per_env_measures.mean(dim=1)
 
-        total_reward = total_reward.reshape(
+        episode_returns = total_reward.reshape(
             (vec_agent.num_models,
-             num_envs // vec_agent.num_models)).mean(axis=1)
+             num_envs // vec_agent.num_models))
+        total_reward = episode_returns.mean(axis=1)
         avg_traj_lengths = traj_lengths.to(torch.float32).reshape((vec_agent.num_models, num_envs // vec_agent.num_models)).\
             mean(dim=1).cpu().numpy()
         metadata = np.array([{
             'traj_length': float(t)
         } for t in avg_traj_lengths]).reshape(-1,)
+        # Opt-in only: keep training/archive metadata small while allowing
+        # paired, same-scenario behavior audits without averaging away styles.
+        if return_episode_data:
+            episode_lengths = traj_lengths.reshape(vec_agent.num_models, -1)
+            for i, data in enumerate(metadata):
+                data['episodes'] = {
+                    'objective': episode_returns[i].tolist(),
+                    'length': episode_lengths[i].tolist(),
+                    'measures': per_env_measures[i].detach().cpu().tolist(),
+                }
+        for measure_index in range(self.cfg.num_dims):
+            values = per_env_measures[:, :, measure_index]
+            for policy_index, data in enumerate(metadata):
+                policy_values = values[policy_index]
+                data[f'measure_{measure_index}_std'] = float(
+                    policy_values.std(unbiased=False).item())
+                data[f'measure_{measure_index}_min'] = float(
+                    policy_values.min().item())
+                data[f'measure_{measure_index}_max'] = float(
+                    policy_values.max().item())
         for name, per_env_values in task_metric_extrema.items():
             per_policy = per_env_values.reshape(
                 vec_agent.num_models, num_envs // vec_agent.num_models)
@@ -1120,13 +1167,17 @@ class PPO:
             }.get(name, name)
             for i, value in enumerate(per_policy_mean):
                 metadata[i][metadata_name] = float(value)
+                if return_episode_data:
+                    metadata[i]['episodes'][name] = (
+                        per_policy[i].detach().cpu().tolist())
         max_reward = np.max(total_reward)
         min_reward = np.min(total_reward)
         mean_reward = np.mean(total_reward)
         mean_traj_length = torch.mean(traj_lengths.to(
             torch.float64)).detach().cpu().numpy().item()
         objective_measures = np.concatenate(
-            (total_reward.reshape(-1, 1), measures), axis=1)
+            (total_reward.reshape(-1, 1),
+             measure_means.detach().cpu().numpy()), axis=1)
 
         if self.cfg.normalize_obs:
             for i, data in enumerate(metadata):
@@ -1167,5 +1218,6 @@ class PPO:
                     f'Max object height: mean={heights.mean():.4f}, '
                     f'max={heights.max():.4f}')
 
-        return total_reward.reshape(-1,), measures.reshape(
-            -1, self.cfg.num_dims), metadata
+        mean_measures = measure_means.detach().cpu().numpy().reshape(
+            -1, self.cfg.num_dims)
+        return total_reward.reshape(-1,), mean_measures, metadata

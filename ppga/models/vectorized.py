@@ -75,12 +75,16 @@ class VectorizedPolicy(StochasticPolicy, ABC):
         self.use_amp = use_amp
         self.actor_hidden_dims = getattr(models[0], 'actor_hidden_dims',
                                          (400, 200, 100))
+        self.actor_activation = getattr(models[0], 'actor_activation', 'elu')
         self.action_transform = getattr(models[0], 'action_transform', 'none')
         self.action_std_parameterization = getattr(
             models[0], 'action_std_parameterization', 'log')
         if any(getattr(model, 'action_transform', 'none') != self.action_transform
                for model in models):
             raise ValueError('All vectorized actors must use the same action transform')
+        if any(getattr(model, 'actor_activation', 'elu')
+               != self.actor_activation for model in models):
+            raise ValueError('All vectorized actors must use the same activation')
         self.last_raw_action = None
 
         if normalize_obs:
@@ -134,12 +138,13 @@ class VectorizedPolicy(StochasticPolicy, ABC):
                     self.obs_shape, self.action_shape, self.normalize_obs,
                     self.normalize_returns,
                     action_std_parameterization=self.action_std_parameterization,
-                    hidden_dims=self.actor_hidden_dims)
+                    hidden_dims=self.actor_hidden_dims,
+                    activation=self.actor_activation)
             except TypeError:
                 model = self.model_fn(self.obs_shape, self.action_shape,
                                       self.normalize_obs,
                                       self.normalize_returns)
-            models.append(model)
+            models.append(model.to(self.device))
         for i, model in enumerate(models):
             if hasattr(model, 'action_transform'):
                 model.action_transform = self.action_transform
@@ -158,7 +163,8 @@ class VectorizedPolicy(StochasticPolicy, ABC):
                 model.return_normalizer = self.rew_normalizers[i]
 
             # update action logprobs
-            model.actor_logstd.data = self.actor_logstd[i]
+            with torch.no_grad():
+                model.actor_logstd.copy_(self.actor_logstd[i].reshape_as(model.actor_logstd))
         return models
 
     @abstractmethod
@@ -208,7 +214,9 @@ class VectorizedActor(VectorizedPolicy):
                                   use_amp=use_amp)
         self.blocks = self._vectorize_layers('actor_mean', models)
         self.actor_mean = nn.Sequential(*self.blocks)
-        action_logprobs = [model.actor_logstd for model in models]
+        # Older vec_to_models() exports dropped the leading singleton axis.
+        # Accept those actors while keeping every vectorized row [action_dim].
+        action_logprobs = [model.actor_logstd.reshape(1, -1).to(self.device) for model in models]
         action_logprobs = torch.cat(action_logprobs).to(self.device)
         self.actor_logstd = nn.Parameter(action_logprobs)
 

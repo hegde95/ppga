@@ -1,6 +1,9 @@
 import argparse
 import json
+import math
 import os
+import signal
+import shutil
 import sys
 import time
 from distutils.util import strtobool
@@ -26,6 +29,24 @@ def _json_default(value):
     raise TypeError(f'Object of type {type(value).__name__} is not JSON serializable')
 
 
+class TrainingBudget:
+    """Stop only between complete PPO updates, so checkpoints stay resumable."""
+    def __init__(self, hours=0, clock=time.monotonic):
+        if not math.isfinite(hours) or hours < 0:
+            raise ValueError('max_training_hours must be finite and nonnegative')
+        self.clock = clock
+        self.deadline = clock() + hours * 3600 if hours else None
+        self.reason = None
+
+    def request_stop(self, signum, _frame):
+        self.reason = f'signal_{signum}'
+
+    def __call__(self):
+        if self.reason is None and self.deadline is not None and self.clock() >= self.deadline:
+            self.reason = 'time_limit'
+        return self.reason is not None
+
+
 def _actor_state_dict(alg):
     actor_state = {
         key: value.detach().cpu()
@@ -45,6 +66,10 @@ def _checkpoint_payload(alg, cfg, update, global_step):
         'update': int(update),
         'global_step': int(global_step),
         'action_transform': cfg.action_transform,
+        'action_std_parameterization': cfg.action_std_parameterization,
+        'actor_hidden_dims': tuple(cfg.actor_hidden_dims),
+        'actor_activation': cfg.actor_activation,
+        'normalize_obs': bool(cfg.normalize_obs),
         'actor_state_dict': _actor_state_dict(alg),
         'vec_inference_state_dict': alg.vec_inference.state_dict(),
         'optimizer_state_dict': alg.vec_optimizer.state_dict(),
@@ -74,6 +99,12 @@ def _save_periodic_checkpoint(alg, cfg, outdir, update, global_step):
     torch.save(_checkpoint_payload(alg, cfg, update, global_step),
                temporary_path)
     temporary_path.replace(path)
+    milestone_interval = getattr(cfg, 'checkpoint_milestone_updates', 0)
+    if milestone_interval > 0 and update > 0 and update % milestone_interval == 0:
+        milestone = checkpoint_dir / f'milestone_{global_step:012d}.pt'
+        milestone_tmp = milestone.with_suffix('.tmp')
+        shutil.copyfile(path, milestone_tmp)
+        milestone_tmp.replace(milestone)
     checkpoints = sorted(checkpoint_dir.glob('checkpoint_*.pt'))
     for old_checkpoint in checkpoints[:-cfg.max_checkpoints]:
         old_checkpoint.unlink()
@@ -111,6 +142,27 @@ def _load_training_checkpoint(alg, cfg, checkpoint_path):
     return int(checkpoint['update']), int(checkpoint['global_step'])
 
 
+def _validate_actor_checkpoint(checkpoint, cfg):
+    expected = {
+        'action_transform': cfg.action_transform,
+        'action_std_parameterization': cfg.action_std_parameterization,
+        'actor_activation': cfg.actor_activation,
+        'normalize_obs': bool(cfg.normalize_obs),
+    }
+    for name, current_value in expected.items():
+        saved_value = checkpoint.get(name)
+        if saved_value is not None and saved_value != current_value:
+            raise ValueError(
+                f'Actor checkpoint {name}={saved_value!r}, but the current '
+                f'configuration uses {current_value!r}')
+    saved_dims = checkpoint.get('actor_hidden_dims')
+    if (saved_dims is not None
+            and tuple(saved_dims) != tuple(cfg.actor_hidden_dims)):
+        raise ValueError(
+            f'Actor checkpoint hidden dims are {tuple(saved_dims)}, but the '
+            f'current configuration uses {tuple(cfg.actor_hidden_dims)}')
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--env_name',
@@ -139,6 +191,9 @@ def parse_args():
 
     # algorithm args
     parser.add_argument('--total_timesteps', type=int, default=1000000)
+    parser.add_argument('--max_training_hours', type=float, default=0,
+                        help='Stop after a complete PPO update; 0 means unlimited. '
+                             'Final evaluation is outside this training budget.')
     parser.add_argument('--env_type',
                         type=str,
                         choices=['brax', 'isaac', 'mjlab'],
@@ -287,6 +342,9 @@ def parse_args():
                         default=(400, 200, 100),
                         metavar=('H1', 'H2', 'H3'),
                         help='Actor hidden-layer widths')
+    parser.add_argument('--actor_activation', choices=['elu', 'tanh'],
+                        default='elu',
+                        help='Actor hidden-layer activation')
     parser.add_argument('--eval_deterministic',
                         type=lambda x: bool(strtobool(x)),
                         default=True,
@@ -298,6 +356,8 @@ def parse_args():
                         help='Evaluate candidate policies on identical reset scenarios')
     parser.add_argument('--eval_common_seed_offset', type=int, default=1000000,
                         help='Seed offset for common-random-number evaluations')
+    parser.add_argument('--eval_fixed_scenarios', type=lambda x: bool(strtobool(x)),
+                        default=False, help='Reuse the same scenario seed across evaluations')
     parser.add_argument('--measure_reward_scale',
                         type=float,
                         default=None,
@@ -308,7 +368,10 @@ def parse_args():
                         choices=['grip_orientation_elbow_extension',
                                  'grip_orientation_arm_length',
                                  'approach_transport', 'motion_effort',
-                                 'height_approach', 'progress'],
+                                 'height_approach', 'progress',
+                                 'contact_azimuth_height',
+                                 'approach_orientation',
+                                 'contact_transport'],
                         default='grip_orientation_elbow_extension',
                         help='MJLab QD descriptor pair')
     parser.add_argument('--mjlab_motion_speed_reference', type=float,
@@ -343,6 +406,19 @@ def parse_args():
     parser.add_argument('--mjlab_transport_deviation_reference', type=float,
                         default=0.15,
                         help='Peak signed transport deviation mapped to descriptor endpoints')
+    parser.add_argument('--mjlab_contact_height_reference', type=float,
+                        default=0.02,
+                        help='Cube half-height in meters used to normalize contact height')
+    parser.add_argument('--mjlab_contact_azimuth_frame',
+                        choices=['object', 'task'], default='object',
+                        help='Reference frame for contact azimuth')
+    parser.add_argument('--mjlab_contact_sample', choices=['sensor', 'site'],
+                        default='sensor',
+                        help='Position sampled when first contact occurs')
+    parser.add_argument('--mjlab_contact_height_min', type=float, default=None,
+                        help='Optional contact-height value mapped to zero')
+    parser.add_argument('--mjlab_contact_height_max', type=float, default=None,
+                        help='Optional contact-height value mapped to one')
     parser.add_argument('--mjlab_arm_length_min', type=float, default=0.20,
                         help='Arm length in meters mapped to descriptor zero')
     parser.add_argument('--mjlab_arm_length_max', type=float, default=0.50,
@@ -365,6 +441,8 @@ def parse_args():
                         help='Save a resumable PPO checkpoint every N updates; 0 disables')
     parser.add_argument('--max_checkpoints', type=int, default=3,
                         help='Maximum number of periodic PPO checkpoints to retain')
+    parser.add_argument('--checkpoint_milestone_updates', type=int, default=0,
+                        help='Keep unrotated copies at periodic saves divisible by N; 0 disables')
     parser.add_argument('--resume_checkpoint', type=str, default=None,
                         help='Resume PPO model, optimizer, and counters from a periodic checkpoint')
     parser.add_argument('--initial_actor_checkpoint', type=str, default=None,
@@ -380,6 +458,9 @@ def parse_args():
 
 if __name__ == '__main__':
     cfg = parse_args()
+    budget = TrainingBudget(cfg.max_training_hours)
+    for stop_signal in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(stop_signal, budget.request_stop)
 
     if cfg.seed is None:
         cfg.seed = int(time.time()) + int(os.getpid())
@@ -388,6 +469,8 @@ if __name__ == '__main__':
         raise ValueError('checkpoint_interval_updates cannot be negative')
     if cfg.max_checkpoints < 1:
         raise ValueError('max_checkpoints must be at least 1')
+    if cfg.checkpoint_milestone_updates < 0:
+        raise ValueError('checkpoint_milestone_updates cannot be negative')
     if cfg.adaptive_kl and cfg.target_kl is None:
         raise ValueError('adaptive_kl requires target_kl')
     if cfg.initial_action_std <= 0:
@@ -466,7 +549,8 @@ if __name__ == '__main__':
     if cfg.initial_actor_checkpoint:
         checkpoint = torch.load(cfg.initial_actor_checkpoint,
                                 map_location=alg.device,
-                                weights_only=False)
+                                weights_only=True)
+        _validate_actor_checkpoint(checkpoint, cfg)
         actor_state = dict(checkpoint.get('actor_state_dict', checkpoint))
         actor = alg._agents[0]
         if ('actor_logstd' in actor_state
@@ -484,6 +568,8 @@ if __name__ == '__main__':
             f'Resumed PPO from update {start_update}, step {initial_global_step}')
 
     checkpoint_callback = None
+    if outdir is not None and not cfg.resume_checkpoint:
+        torch.save(_checkpoint_payload(alg, cfg, 0, 0), outdir / 'initial_model.pt')
     if outdir is not None and cfg.checkpoint_interval_updates > 0:
         checkpoint_callback = lambda trainer, update, step: (
             _save_periodic_checkpoint(trainer, cfg, outdir, update, step))
@@ -494,7 +580,15 @@ if __name__ == '__main__':
         start_update=start_update,
         initial_global_step=initial_global_step,
         checkpoint_callback=checkpoint_callback,
-        checkpoint_interval=cfg.checkpoint_interval_updates)
+        checkpoint_interval=cfg.checkpoint_interval_updates,
+        stop_callback=budget)
+    if outdir is not None:
+        # Save before evaluation: a renderer/evaluation failure must not lose training.
+        _save_periodic_checkpoint(alg, cfg, outdir, alg.completed_updates,
+                                  alg.completed_global_step)
+        with (outdir / 'training_status.json').open('w') as f:
+            json.dump(dict(status='training_complete', stop_reason=budget.reason or 'step_limit',
+                           update=alg.completed_updates, global_step=alg.completed_global_step), f, indent=2)
     objectives, measures, metadata = alg.evaluate(
         alg.vec_inference,
         vec_env,
@@ -502,7 +596,7 @@ if __name__ == '__main__':
         deterministic=cfg.eval_deterministic)
     if outdir is not None:
         final_payload = _checkpoint_payload(
-            alg, cfg, num_updates, num_updates * cfg.batch_size)
+            alg, cfg, alg.completed_updates, alg.completed_global_step)
         final_payload.update({
             'objective': float(objectives[0]),
             'measures': measures[0].tolist(),

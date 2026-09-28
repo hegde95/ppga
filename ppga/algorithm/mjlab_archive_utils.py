@@ -52,7 +52,8 @@ def restore_archive_actor(row, cfg, solution_columns=None):
         cfg.normalize_returns, cfg.action_transform,
         getattr(cfg, 'action_std_parameterization', 'log'),
         hidden_dims=getattr(cfg, 'actor_hidden_dims',
-                            (400, 200, 100))).deserialize(
+                            (400, 200, 100)),
+        activation=getattr(cfg, 'actor_activation', 'elu')).deserialize(
                                 row[solution_columns].to_numpy(
                                     dtype=np.float32))
     metadata = row.get('metadata')

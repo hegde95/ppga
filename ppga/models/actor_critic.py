@@ -23,18 +23,28 @@ class Actor(StochasticPolicy):
                  action_transform: str = "none",
                  action_std_parameterization: str = "log",
                  initial_action_std: float = 1.0,
-                 hidden_dims=(400, 200, 100)):
+                 hidden_dims=(400, 200, 100),
+                 activation: str = "elu"):
         StochasticPolicy.__init__(self,
                                   normalize_obs=normalize_obs,
                                   obs_shape=obs_shape,
                                   normalize_returns=normalize_returns)
 
         self.actor_hidden_dims = tuple(int(dim) for dim in hidden_dims)
+        activation_types = {
+            "elu": nn.ELU,
+            "tanh": nn.Tanh,
+        }
+        if activation not in activation_types:
+            raise ValueError(
+                f"Unknown actor activation {activation!r}; expected one of "
+                f"{sorted(activation_types)}")
+        self.actor_activation = activation
         layers = []
         input_dim = int(np.array(obs_shape).prod())
         for hidden_dim in self.actor_hidden_dims:
             layers.extend((layer_init(nn.Linear(input_dim, hidden_dim)),
-                           nn.ELU()))
+                           activation_types[activation]()))
             input_dim = hidden_dim
         layers.append(
             layer_init(nn.Linear(input_dim, np.prod(action_shape)), std=0.01))

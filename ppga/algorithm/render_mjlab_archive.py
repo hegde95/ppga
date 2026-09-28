@@ -17,7 +17,9 @@ from ppga.algorithm.mjlab_archive_utils import (
     archive_solution_columns, metadata_success_rate,
     restore_archive_actor, select_representative_elites)
 from ppga.envs.mjlab.mjlab_env import (
-    ApproachTransportMeasures, GripOrientationArmLengthMeasures,
+    ApproachOrientationMeasures, ApproachTransportMeasures,
+    ContactAzimuthHeightMeasures, ContactTransportMeasures,
+    GripOrientationArmLengthMeasures,
     GripOrientationElbowExtensionMeasures,
     _motion_effort_parameters, lift_cube_measures, make_base_env_mjlab)
 from ppga.envs.qd_env import policy_observation, policy_observation_space
@@ -42,7 +44,9 @@ def parse_args():
         '--descriptor_mode',
         choices=['grip_orientation_elbow_extension',
                  'grip_orientation_arm_length', 'approach_transport',
-                 'motion_effort', 'height_approach', 'progress'],
+                 'motion_effort', 'height_approach', 'progress',
+                 'contact_azimuth_height', 'approach_orientation',
+                 'contact_transport'],
         default=None, help='Override the descriptor mode stored in the config')
     parser.add_argument(
         '--max_steps', type=int, default=None,
@@ -143,6 +147,58 @@ def main():
                 cfg, 'mjlab_elbow_extension_min_degrees', 45.0),
             elbow_extension_max_degrees=getattr(
                 cfg, 'mjlab_elbow_extension_max_degrees', 65.0))
+    elif descriptor_mode == 'contact_azimuth_height':
+        episode_measure_tracker = ContactAzimuthHeightMeasures(
+            env,
+            contact_height_reference=getattr(
+                cfg, 'mjlab_contact_height_reference', 0.02),
+            contact_azimuth_frame=getattr(
+                cfg, 'mjlab_contact_azimuth_frame', 'object'),
+            contact_sample=getattr(cfg, 'mjlab_contact_sample', 'sensor'),
+            contact_height_min=getattr(
+                cfg, 'mjlab_contact_height_min', None),
+            contact_height_max=getattr(
+                cfg, 'mjlab_contact_height_max', None),
+            grip_tilt_min_degrees=getattr(
+                cfg, 'mjlab_grip_tilt_min_degrees', 15.0),
+            grip_tilt_max_degrees=getattr(
+                cfg, 'mjlab_grip_tilt_max_degrees', 45.0))
+    elif descriptor_mode == 'approach_orientation':
+        episode_measure_tracker = ApproachOrientationMeasures(
+            env,
+            contact_height_reference=getattr(
+                cfg, 'mjlab_contact_height_reference', 0.02),
+            contact_azimuth_frame=getattr(
+                cfg, 'mjlab_contact_azimuth_frame', 'object'),
+            contact_sample=getattr(cfg, 'mjlab_contact_sample', 'sensor'),
+            contact_height_min=getattr(
+                cfg, 'mjlab_contact_height_min', None),
+            contact_height_max=getattr(
+                cfg, 'mjlab_contact_height_max', None),
+            grip_tilt_min_degrees=getattr(
+                cfg, 'mjlab_grip_tilt_min_degrees', 15.0),
+            grip_tilt_max_degrees=getattr(
+                cfg, 'mjlab_grip_tilt_max_degrees', 45.0))
+    elif descriptor_mode == 'contact_transport':
+        episode_measure_tracker = ContactTransportMeasures(
+            env,
+            contact_height_reference=getattr(
+                cfg, 'mjlab_contact_height_reference', 0.02),
+            contact_azimuth_frame=getattr(
+                cfg, 'mjlab_contact_azimuth_frame', 'object'),
+            contact_sample=getattr(cfg, 'mjlab_contact_sample', 'sensor'),
+            contact_height_min=getattr(
+                cfg, 'mjlab_contact_height_min', None),
+            contact_height_max=getattr(
+                cfg, 'mjlab_contact_height_max', None),
+            grip_tilt_min_degrees=getattr(
+                cfg, 'mjlab_grip_tilt_min_degrees', 15.0),
+            grip_tilt_max_degrees=getattr(
+                cfg, 'mjlab_grip_tilt_max_degrees', 45.0),
+            transport_start_distance=getattr(
+                cfg, 'mjlab_transport_start_distance', 0.03),
+            transport_deviation_reference=getattr(
+                cfg, 'mjlab_transport_deviation_reference', 0.15))
 
     rows = []
     try:

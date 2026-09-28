@@ -1,4 +1,4 @@
-# Install in a separate Linux/WSL environment from Isaac Lab.
+# Install in a separate Ubuntu environment from Isaac Lab.
 # MJLab 1.6 uses MuJoCo Warp and supports Python 3.10-3.13. Pin the
 # Blackwell-compatible CUDA 12.8 build rather than allowing PyPI to select a
 # newer CUDA 13 PyTorch build that may exceed a cluster's driver version.

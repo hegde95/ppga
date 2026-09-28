@@ -55,8 +55,11 @@ def main():
     torch.save({
         'actor_state_dict': actor.state_dict(),
         'source_checkpoint': str(Path(args.input_checkpoint).resolve()),
+        'action_transform': 'none',
         'action_std_parameterization': 'direct',
         'actor_hidden_dims': hidden_dims,
+        'actor_activation': 'elu',
+        'normalize_obs': True,
     }, output)
     print(f'Converted {args.input_checkpoint} -> {output}')
     print(f'obs_dim={obs_dim}, action_dim={action_dim}, hidden_dims={hidden_dims}')

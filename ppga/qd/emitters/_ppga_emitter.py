@@ -341,21 +341,27 @@ class PPGAEmitter(EmitterBase):
         self.last_stop_status = stop_status
 
         if stop_status:
-            new_elite = self.archive.sample_elites(1)
-            new_theta, measures, obj = (new_elite["solution"][0],
-                                        new_elite["measures"][0],
-                                        new_elite["objective"][0])
-            log.debug(
-                f'XNES is restarting with a new solution whose measures are {measures} and objective is {obj}'
-            )
-            if self._normalize_obs:
-                self.mean_agent_obs_normalizer.load_state_dict(
-                    new_elite["metadata"][0]['obs_normalizer'])
-            if self._normalize_returns:
-                self._mean_agent_return_normalizer.load_state_dict(
-                    new_elite["metadata"][0]['return_normalizer'])
+            if self.archive.empty:
+                # A success gate can reject every candidate. Restart the
+                # coefficient search without sampling a nonexistent elite or
+                # replacing the mean/normalizers with an unqualified policy.
+                log.warning('Archive is empty; restarting XNES around the current mean')
+            else:
+                new_elite = self.archive.sample_elites(1)
+                new_theta, measures, obj = (new_elite["solution"][0],
+                                            new_elite["measures"][0],
+                                            new_elite["objective"][0])
+                log.debug(
+                    f'XNES is restarting with a new solution whose measures are {measures} and objective is {obj}'
+                )
+                if self._normalize_obs:
+                    self.mean_agent_obs_normalizer.load_state_dict(
+                        new_elite["metadata"][0]['obs_normalizer'])
+                if self._normalize_returns:
+                    self._mean_agent_return_normalizer.load_state_dict(
+                        new_elite["metadata"][0]['return_normalizer'])
 
-            self._grad_opt.theta = new_theta
+                self._grad_opt.theta = new_theta
             self.opt = XNES(solution_dim=self._num_coefficients,
                             device=self.device,
                             sigma0=self._sigma0,

@@ -369,6 +369,331 @@ class GripOrientationElbowExtensionMeasures:
                             self.elbow_extension.clamp(0.0, 1.0)), dim=-1)
 
 
+def _quat_rotate_inverse(quaternion: torch.Tensor,
+                         vector: torch.Tensor) -> torch.Tensor:
+    """Rotate world-frame vectors into frames defined by wxyz quaternions."""
+    quaternion = quaternion / torch.linalg.vector_norm(
+        quaternion, dim=-1, keepdim=True).clamp_min(1e-6)
+    scalar = quaternion[:, :1]
+    imaginary = quaternion[:, 1:]
+    cross = torch.cross(imaginary, vector, dim=-1)
+    return (vector - 2.0 * scalar * cross
+            + 2.0 * torch.cross(imaginary, cross, dim=-1))
+
+
+class ContactGeometryMeasures:
+    """Track first-contact geometry, using closest approach as a fallback."""
+
+    def __init__(self, env, contact_height_reference=0.02,
+                 contact_azimuth_frame="object",
+                 contact_sample="sensor",
+                 contact_height_min=None,
+                 contact_height_max=None,
+                 grip_tilt_min_degrees=15.0,
+                 grip_tilt_max_degrees=45.0):
+        self.env = env
+        self.contact_height_reference = float(contact_height_reference)
+        self.contact_azimuth_frame = contact_azimuth_frame
+        self.contact_sample = contact_sample
+        self.contact_height_min = contact_height_min
+        self.contact_height_max = contact_height_max
+        self.grip_tilt_min_degrees = float(grip_tilt_min_degrees)
+        self.grip_tilt_max_degrees = float(grip_tilt_max_degrees)
+        if self.contact_height_reference <= 0:
+            raise ValueError(
+                "mjlab_contact_height_reference must be positive")
+        if self.contact_azimuth_frame not in {"object", "task"}:
+            raise ValueError(
+                "mjlab_contact_azimuth_frame must be 'object' or 'task'")
+        if self.contact_sample not in {"sensor", "site"}:
+            raise ValueError("mjlab_contact_sample must be 'sensor' or 'site'")
+        if (self.contact_height_min is None) != (self.contact_height_max is None):
+            raise ValueError(
+                "mjlab contact height min and max must be set together")
+        if (self.contact_height_min is not None
+                and self.contact_height_max <= self.contact_height_min):
+            raise ValueError("mjlab contact height max must exceed min")
+        if self.grip_tilt_max_degrees <= self.grip_tilt_min_degrees:
+            raise ValueError("grip tilt maximum must exceed its minimum")
+
+        reaching_cfg = env.reward_manager.get_term_cfg("lift")
+        asset_cfg = reaching_cfg.params["asset_cfg"]
+        self.robot = env.scene[asset_cfg.name]
+        if len(asset_cfg.site_ids) != 1:
+            raise ValueError(
+                "contact descriptors require exactly one end-effector site")
+        self.grasp_site_id = asset_cfg.site_ids[0]
+        self.contact_sensor = env.scene["gripper_cube_contact"]
+
+        device = env.scene.env_origins.device
+        num_envs = env.num_envs
+        self.closest_distance = torch.full(
+            (num_envs,), float("inf"), device=device)
+        self.contact_recorded = torch.zeros(
+            num_envs, dtype=torch.bool, device=device)
+        self.contact_azimuth = torch.full(
+            (num_envs,), 0.5, device=device)
+        self.contact_height = torch.full(
+            (num_envs,), 0.5, device=device)
+        self.grip_tilt = torch.full((num_envs,), 0.5, device=device)
+
+    def reset(self, env_ids=None):
+        if env_ids is None:
+            env_ids = torch.arange(
+                self.env.num_envs, device=self.closest_distance.device)
+        self.closest_distance[env_ids] = float("inf")
+        self.contact_recorded[env_ids] = False
+        self.contact_azimuth[env_ids] = 0.5
+        self.contact_height[env_ids] = 0.5
+        self.grip_tilt[env_ids] = 0.5
+
+    def _update_contact_geometry(self) -> None:
+        command = self.env.command_manager.get_term("lift_height")
+        object_pos = command.object.data.root_link_pos_w
+        object_quat = command.object.data.root_link_quat_w
+        ee_pos = self.robot.data.site_pos_w[:, self.grasp_site_id]
+        ee_quat = self.robot.data.site_quat_w[:, self.grasp_site_id]
+        ee_to_cube = _raw_observation_term(self.env, "ee_to_cube")
+        distance = torch.linalg.vector_norm(ee_to_cube, dim=-1)
+
+        sensor_data = self.contact_sensor.data
+        found = sensor_data.found
+        position = sensor_data.pos
+        if found is None or position is None:
+            raise RuntimeError(
+                "gripper_cube_contact sensor needs found and pos fields")
+        has_contact = found.reshape(found.shape[0], -1).any(dim=-1)
+        first_contact = has_contact & ~self.contact_recorded
+        closer = ~self.contact_recorded & (distance < self.closest_distance)
+        update = first_contact | closer
+
+        # Replace the closest-approach proxy at first contact.
+        contact_pos = position.reshape(position.shape[0], -1, 3)[:, 0]
+        if self.contact_sample == "site":
+            sample_pos = ee_pos
+        else:
+            sample_pos = torch.where(
+                first_contact.unsqueeze(-1), contact_pos, ee_pos)
+        relative_world = sample_pos - object_pos
+        relative = _quat_rotate_inverse(object_quat, relative_world)
+        if self.contact_azimuth_frame == "task":
+            radial = object_pos[:, :2] - self.env.scene.env_origins[:, :2]
+            radial = radial / torch.linalg.vector_norm(
+                radial, dim=-1, keepdim=True).clamp_min(1e-6)
+            local_x = (relative_world[:, :2] * radial).sum(dim=-1)
+            local_y = (radial[:, 0] * relative_world[:, 1]
+                       - radial[:, 1] * relative_world[:, 0])
+            # Center the usual grasp-site direction and keep the seam on the
+            # opposite face so nearby approaches do not straddle 0 and 1.
+            azimuth = torch.remainder(
+                torch.atan2(local_y, local_x) + torch.pi,
+                2.0 * torch.pi
+            ) / (2.0 * torch.pi)
+        else:
+            azimuth = (torch.atan2(relative[:, 1], relative[:, 0])
+                       + torch.pi) / (2.0 * torch.pi)
+        if self.contact_height_min is None:
+            height = (0.5 + relative[:, 2]
+                      / (2.0 * self.contact_height_reference))
+        else:
+            height = ((relative[:, 2] - self.contact_height_min)
+                      / (self.contact_height_max - self.contact_height_min))
+
+        grip_axis_world = GripOrientationArmLengthMeasures._rotate_local_z(
+            ee_quat)
+        grip_axis_object = _quat_rotate_inverse(
+            object_quat, grip_axis_world)
+        tilt_degrees = torch.rad2deg(torch.acos(
+            (-grip_axis_object[:, 2]).clamp(-1.0, 1.0)))
+        tilt = ((tilt_degrees - self.grip_tilt_min_degrees)
+                / (self.grip_tilt_max_degrees
+                   - self.grip_tilt_min_degrees))
+
+        self.closest_distance = torch.where(
+            closer, distance, self.closest_distance)
+        self.contact_azimuth = torch.where(
+            update, azimuth.clamp(0.0, 1.0), self.contact_azimuth)
+        self.contact_height = torch.where(
+            update, height.clamp(0.0, 1.0), self.contact_height)
+        self.grip_tilt = torch.where(
+            update, tilt.clamp(0.0, 1.0), self.grip_tilt)
+        self.contact_recorded |= has_contact
+
+
+class ContactAzimuthHeightMeasures(ContactGeometryMeasures):
+    """Track first-contact azimuth and height in the cube frame."""
+
+    def update(self) -> torch.Tensor:
+        self._update_contact_geometry()
+        return self.measures()
+
+    def measures(self) -> torch.Tensor:
+        return torch.stack((self.contact_azimuth, self.contact_height), dim=-1)
+
+
+class ApproachOrientationMeasures(ContactGeometryMeasures):
+    """Track contact azimuth (with fallback) and gripper tilt."""
+
+    def update(self) -> torch.Tensor:
+        self._update_contact_geometry()
+        return self.measures()
+
+    def measures(self) -> torch.Tensor:
+        return torch.stack((self.contact_azimuth, self.grip_tilt), dim=-1)
+
+
+class ApproachWindowOrientationMeasures(ContactGeometryMeasures):
+    """Pair contact azimuth with a final-approach orientation statistic."""
+
+    def __init__(self, env, orientation_mode, approach_radius=0.10, **kwargs):
+        super().__init__(env, **kwargs)
+        if orientation_mode not in {"inclination", "average_tilt"}:
+            raise ValueError("unknown approach orientation mode")
+        if approach_radius <= 0:
+            raise ValueError("approach_radius must be positive")
+        self.orientation_mode = orientation_mode
+        self.approach_radius = float(approach_radius)
+        num_envs = env.num_envs
+        device = env.scene.env_origins.device
+        self.entered = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        self.entry_pos = torch.zeros(num_envs, 3, device=device)
+        self.tilt_sum = torch.zeros(num_envs, device=device)
+        self.tilt_count = torch.zeros(num_envs, device=device)
+        self.orientation = torch.full((num_envs,), 0.5, device=device)
+
+    def reset(self, env_ids=None):
+        super().reset(env_ids)
+        if env_ids is None:
+            env_ids = torch.arange(
+                self.env.num_envs, device=self.orientation.device)
+        self.entered[env_ids] = False
+        self.entry_pos[env_ids] = 0.0
+        self.tilt_sum[env_ids] = 0.0
+        self.tilt_count[env_ids] = 0.0
+        self.orientation[env_ids] = 0.5
+
+    def update(self) -> torch.Tensor:
+        command = self.env.command_manager.get_term("lift_height")
+        object_quat = command.object.data.root_link_quat_w
+        ee_to_cube = _raw_observation_term(self.env, "ee_to_cube")
+        distance = torch.linalg.vector_norm(ee_to_cube, dim=-1)
+        ee_pos = self.robot.data.site_pos_w[:, self.grasp_site_id]
+        ee_quat = self.robot.data.site_quat_w[:, self.grasp_site_id]
+
+        was_recorded = self.contact_recorded.clone()
+        closer = ~was_recorded & (distance < self.closest_distance)
+        in_window = ~was_recorded & (distance <= self.approach_radius)
+        entering = in_window & ~self.entered
+        self.entry_pos = torch.where(
+            entering.unsqueeze(-1), ee_pos, self.entry_pos)
+        self.entered |= in_window
+
+        grip_axis_world = GripOrientationArmLengthMeasures._rotate_local_z(
+            ee_quat)
+        grip_axis_object = _quat_rotate_inverse(
+            object_quat, grip_axis_world)
+        tilt_degrees = torch.rad2deg(torch.acos(
+            (-grip_axis_object[:, 2]).clamp(-1.0, 1.0)))
+        tilt = ((tilt_degrees - self.grip_tilt_min_degrees)
+                / (self.grip_tilt_max_degrees
+                   - self.grip_tilt_min_degrees)).clamp(0.0, 1.0)
+        self.tilt_sum += torch.where(in_window, tilt, 0.0)
+        self.tilt_count += in_window.to(self.tilt_count.dtype)
+
+        self._update_contact_geometry()
+        first_contact = self.contact_recorded & ~was_recorded
+        update = self.entered & (closer | first_contact)
+        if self.orientation_mode == "inclination":
+            displacement = ee_pos - self.entry_pos
+            horizontal = torch.linalg.vector_norm(
+                displacement[:, :2], dim=-1)
+            vertical = displacement[:, 2].abs()
+            inclination = torch.atan2(vertical, horizontal) / (0.5 * torch.pi)
+            valid = torch.linalg.vector_norm(displacement, dim=-1) > 1e-6
+            candidate = torch.where(
+                valid, inclination, torch.full_like(inclination, 0.5))
+        else:
+            candidate = torch.where(
+                self.tilt_count > 0,
+                self.tilt_sum / self.tilt_count.clamp_min(1.0),
+                torch.full_like(self.tilt_sum, 0.5))
+        self.orientation = torch.where(
+            update, candidate.clamp(0.0, 1.0), self.orientation)
+        return self.measures()
+
+    def measures(self) -> torch.Tensor:
+        return torch.stack((self.contact_azimuth, self.orientation), dim=-1)
+
+
+class ContactTransportMeasures(ContactGeometryMeasures):
+    """Track contact azimuth and signed peak cube transport deviation."""
+
+    def __init__(self, env, transport_start_distance=0.03,
+                 transport_deviation_reference=0.15, **kwargs):
+        super().__init__(env, **kwargs)
+        self.transport_start_distance = float(transport_start_distance)
+        self.transport_deviation_reference = float(
+            transport_deviation_reference)
+        if self.transport_start_distance <= 0:
+            raise ValueError(
+                "mjlab_transport_start_distance must be positive")
+        if self.transport_deviation_reference <= 0:
+            raise ValueError(
+                "mjlab_transport_deviation_reference must be positive")
+        num_envs = env.num_envs
+        device = env.scene.env_origins.device
+        self.initial_object_pos = torch.zeros(num_envs, 3, device=device)
+        self.initial_goal_pos = torch.zeros(num_envs, 3, device=device)
+        self.transport_peak = torch.zeros(num_envs, device=device)
+        self.transport_started = torch.zeros(
+            num_envs, dtype=torch.bool, device=device)
+
+    def reset(self, env_ids=None):
+        super().reset(env_ids)
+        if env_ids is None:
+            env_ids = torch.arange(
+                self.env.num_envs, device=self.initial_object_pos.device)
+        command = self.env.command_manager.get_term("lift_height")
+        self.initial_object_pos[env_ids] = (
+            command.object.data.root_link_pos_w[env_ids])
+        self.initial_goal_pos[env_ids] = command.target_pos[env_ids]
+        self.transport_peak[env_ids] = 0.0
+        self.transport_started[env_ids] = False
+
+    def update(self) -> torch.Tensor:
+        self._update_contact_geometry()
+        command = self.env.command_manager.get_term("lift_height")
+        object_pos = command.object.data.root_link_pos_w
+        displacement = torch.linalg.vector_norm(
+            object_pos - self.initial_object_pos, dim=-1)
+        self.transport_started |= displacement >= self.transport_start_distance
+
+        direct_path = self.initial_goal_pos - self.initial_object_pos
+        denominator = direct_path.square().sum(dim=-1).clamp_min(1e-6)
+        progress = ((object_pos - self.initial_object_pos) * direct_path).sum(
+            dim=-1) / denominator
+        straight_path_pos = (self.initial_object_pos
+                             + progress.clamp(0.0, 1.0).unsqueeze(-1)
+                             * direct_path)
+        direct_xy = direct_path[:, :2]
+        direct_xy = direct_xy / torch.linalg.vector_norm(
+            direct_xy, dim=-1, keepdim=True).clamp_min(1e-6)
+        path_error = object_pos[:, :2] - straight_path_pos[:, :2]
+        lateral = (direct_xy[:, 0] * path_error[:, 1]
+                   - direct_xy[:, 1] * path_error[:, 0])
+        farther = (self.transport_started
+                   & (lateral.abs() > self.transport_peak.abs()))
+        self.transport_peak = torch.where(
+            farther, lateral, self.transport_peak)
+        return self.measures()
+
+    def measures(self) -> torch.Tensor:
+        transport = 0.5 + self.transport_peak / (
+            2.0 * self.transport_deviation_reference)
+        return torch.stack((self.contact_azimuth,
+                            transport.clamp(0.0, 1.0)), dim=-1)
+
+
 def _motion_effort_parameters(env, speed_reference=None):
     """Resolve YAM arm joints and physical normalization constants."""
     robot = env.scene["robot"]
@@ -474,6 +799,11 @@ class QDRewardMJLab:
                  transport_start_distance=0.03,
                  approach_deviation_reference=0.05,
                  transport_deviation_reference=0.15,
+                 contact_height_reference=0.02,
+                 contact_azimuth_frame="object",
+                 contact_sample="sensor",
+                 contact_height_min=None,
+                 contact_height_max=None,
                  arm_length_min=0.20,
                  arm_length_max=0.50,
                  grip_tilt_min_degrees=15.0,
@@ -531,6 +861,52 @@ class QDRewardMJLab:
                         elbow_extension_min_degrees),
                     elbow_extension_max_degrees=(
                         elbow_extension_max_degrees)))
+        elif descriptor_mode == "contact_azimuth_height":
+            self.episode_measure_tracker = ContactAzimuthHeightMeasures(
+                env,
+                contact_height_reference=contact_height_reference,
+                contact_azimuth_frame=contact_azimuth_frame,
+                contact_sample=contact_sample,
+                contact_height_min=contact_height_min,
+                contact_height_max=contact_height_max,
+                grip_tilt_min_degrees=grip_tilt_min_degrees,
+                grip_tilt_max_degrees=grip_tilt_max_degrees)
+        elif descriptor_mode == "approach_orientation":
+            self.episode_measure_tracker = ApproachOrientationMeasures(
+                env,
+                contact_height_reference=contact_height_reference,
+                contact_azimuth_frame=contact_azimuth_frame,
+                contact_sample=contact_sample,
+                contact_height_min=contact_height_min,
+                contact_height_max=contact_height_max,
+                grip_tilt_min_degrees=grip_tilt_min_degrees,
+                grip_tilt_max_degrees=grip_tilt_max_degrees)
+        elif descriptor_mode in {
+                "approach_inclination", "approach_average_tilt"}:
+            self.episode_measure_tracker = ApproachWindowOrientationMeasures(
+                env,
+                orientation_mode=(
+                    "inclination" if descriptor_mode == "approach_inclination"
+                    else "average_tilt"),
+                contact_height_reference=contact_height_reference,
+                contact_azimuth_frame=contact_azimuth_frame,
+                contact_sample=contact_sample,
+                contact_height_min=contact_height_min,
+                contact_height_max=contact_height_max,
+                grip_tilt_min_degrees=grip_tilt_min_degrees,
+                grip_tilt_max_degrees=grip_tilt_max_degrees)
+        elif descriptor_mode == "contact_transport":
+            self.episode_measure_tracker = ContactTransportMeasures(
+                env,
+                contact_height_reference=contact_height_reference,
+                contact_azimuth_frame=contact_azimuth_frame,
+                contact_sample=contact_sample,
+                contact_height_min=contact_height_min,
+                contact_height_max=contact_height_max,
+                grip_tilt_min_degrees=grip_tilt_min_degrees,
+                grip_tilt_max_degrees=grip_tilt_max_degrees,
+                transport_start_distance=transport_start_distance,
+                transport_deviation_reference=transport_deviation_reference)
         if self.episode_measure_tracker is not None:
             self.episode_measure_tracker.reset()
 
@@ -651,6 +1027,29 @@ def configure_lift_task(cfg, env_cfg) -> None:
     if getattr(cfg, "mjlab_disable_curriculum", False):
         env_cfg.curriculum = {}
 
+    descriptor_mode = getattr(cfg, "mjlab_descriptor_mode", None)
+    if descriptor_mode in {
+            "contact_azimuth_height", "approach_orientation",
+            "contact_transport", "approach_inclination",
+            "approach_average_tilt"}:
+        from mjlab.sensor import ContactMatch, ContactSensorCfg
+
+        sensor_name = "gripper_cube_contact"
+        if not any(sensor.name == sensor_name
+                   for sensor in (env_cfg.scene.sensors or ())):
+            contact_sensor = ContactSensorCfg(
+                name=sensor_name,
+                primary=ContactMatch(
+                    mode="subtree", pattern="link_6", entity="robot"),
+                secondary=ContactMatch(
+                    mode="body", pattern="cube", entity="cube"),
+                fields=("found", "force", "pos"),
+                reduce="maxforce",
+                num_slots=1,
+            )
+            env_cfg.scene.sensors = (
+                env_cfg.scene.sensors or ()) + (contact_sensor,)
+
     command_cfg = env_cfg.commands["lift_height"]
     if getattr(cfg, "mjlab_fixed_goal", False):
         command_cfg.difficulty = "fixed"
@@ -703,7 +1102,7 @@ def make_base_env_mjlab(cfg):
         from mjlab.tasks.registry import load_env_cfg
     except ImportError as exc:
         raise ImportError(
-            "MJLab is optional. Create a separate Linux/WSL environment and "
+            "MJLab is optional. Create a separate Ubuntu environment and "
             "install requirements-mjlab.txt before using --env_type=mjlab."
         ) from exc
 
@@ -745,6 +1144,13 @@ def make_vec_env_mjlab(cfg):
             cfg, "mjlab_approach_deviation_reference", 0.05),
         transport_deviation_reference=getattr(
             cfg, "mjlab_transport_deviation_reference", 0.15),
+        contact_height_reference=getattr(
+            cfg, "mjlab_contact_height_reference", 0.02),
+        contact_azimuth_frame=getattr(
+            cfg, "mjlab_contact_azimuth_frame", "object"),
+        contact_sample=getattr(cfg, "mjlab_contact_sample", "sensor"),
+        contact_height_min=getattr(cfg, "mjlab_contact_height_min", None),
+        contact_height_max=getattr(cfg, "mjlab_contact_height_max", None),
         arm_length_min=getattr(cfg, "mjlab_arm_length_min", 0.20),
         arm_length_max=getattr(cfg, "mjlab_arm_length_max", 0.50),
         grip_tilt_min_degrees=getattr(

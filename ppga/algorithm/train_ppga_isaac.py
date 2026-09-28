@@ -38,6 +38,27 @@ def _request_graceful_stop(signum, _frame):
         f'Received signal {signum}; checkpointing after the current iteration')
 
 
+def _validate_actor_checkpoint(checkpoint, cfg):
+    expected = {
+        'action_transform': cfg.action_transform,
+        'action_std_parameterization': cfg.action_std_parameterization,
+        'actor_activation': cfg.actor_activation,
+        'normalize_obs': bool(cfg.normalize_obs),
+    }
+    for name, current_value in expected.items():
+        saved_value = checkpoint.get(name)
+        if saved_value is not None and saved_value != current_value:
+            raise ValueError(
+                f'Actor checkpoint {name}={saved_value!r}, but the current '
+                f'configuration uses {current_value!r}')
+    saved_dims = checkpoint.get('actor_hidden_dims')
+    if (saved_dims is not None
+            and tuple(saved_dims) != tuple(cfg.actor_hidden_dims)):
+        raise ValueError(
+            f'Actor checkpoint hidden dims are {tuple(saved_dims)}, but the '
+            f'current configuration uses {tuple(cfg.actor_hidden_dims)}')
+
+
 def strtobool(val):
     """Convert a string representation of truth to true (1) or false (0).
     True values are 'y', 'yes', 't', 'true', 'on', and '1'; false values
@@ -209,6 +230,9 @@ def parse_args():
                         default=(400, 200, 100),
                         metavar=('H1', 'H2', 'H3'),
                         help='Actor hidden-layer widths')
+    parser.add_argument('--actor_activation', choices=['elu', 'tanh'],
+                        default='elu',
+                        help='Actor hidden-layer activation')
     parser.add_argument('--eval_deterministic',
                         type=lambda x: bool(strtobool(x)),
                         default=True,
@@ -220,6 +244,10 @@ def parse_args():
                         help='Evaluate candidate policies on identical reset scenarios')
     parser.add_argument('--eval_common_seed_offset', type=int, default=1000000,
                         help='Seed offset for common-random-number evaluations')
+    parser.add_argument('--eval_fixed_scenarios', type=lambda x: bool(strtobool(x)),
+                        default=False, help='Reuse the same scenario seed across evaluations')
+    parser.add_argument('--mean_min_success_rate', type=float, default=0.0,
+                        help='Reject a PPO mean update below this paired evaluation success rate')
     parser.add_argument('--measure_reward_scale',
                         type=float,
                         default=None,
@@ -230,7 +258,10 @@ def parse_args():
                         choices=['grip_orientation_elbow_extension',
                                  'grip_orientation_arm_length',
                                  'approach_transport', 'motion_effort',
-                                 'height_approach', 'progress'],
+                                 'height_approach', 'progress',
+                                 'contact_azimuth_height',
+                                 'approach_orientation',
+                                 'contact_transport'],
                         default='grip_orientation_elbow_extension',
                         help='MJLab QD descriptor pair')
     parser.add_argument('--mjlab_motion_speed_reference', type=float,
@@ -265,6 +296,19 @@ def parse_args():
     parser.add_argument('--mjlab_transport_deviation_reference', type=float,
                         default=0.15,
                         help='Peak signed transport deviation mapped to descriptor endpoints')
+    parser.add_argument('--mjlab_contact_height_reference', type=float,
+                        default=0.02,
+                        help='Cube half-height in meters used to normalize contact height')
+    parser.add_argument('--mjlab_contact_azimuth_frame',
+                        choices=['object', 'task'], default='object',
+                        help='Reference frame for contact azimuth')
+    parser.add_argument('--mjlab_contact_sample', choices=['sensor', 'site'],
+                        default='sensor',
+                        help='Position sampled when first contact occurs')
+    parser.add_argument('--mjlab_contact_height_min', type=float, default=None,
+                        help='Optional contact-height value mapped to zero')
+    parser.add_argument('--mjlab_contact_height_max', type=float, default=None,
+                        help='Optional contact-height value mapped to one')
     parser.add_argument('--mjlab_arm_length_min', type=float, default=0.20,
                         help='Arm length in meters mapped to descriptor zero')
     parser.add_argument('--mjlab_arm_length_max', type=float, default=0.50,
@@ -463,7 +507,8 @@ def create_scheduler(cfg: Box,
                               cfg.normalize_returns, cfg.action_transform,
                               cfg.action_std_parameterization,
                               cfg.initial_action_std,
-                              hidden_dims=cfg.actor_hidden_dims)
+                              hidden_dims=cfg.actor_hidden_dims,
+                              activation=cfg.actor_activation)
         initial_sol = initial_agent.serialize()
     solution_dim = len(initial_sol)
     mode = 'batch'
@@ -622,15 +667,18 @@ def train_ppga(cfg: Box, vec_env):
 
     # path to summary file
     summary_filename = os.path.join(str(exp_dir), 'summary.csv')
-    if os.path.exists(summary_filename):
-        os.remove(summary_filename)
-    with open(summary_filename, 'w') as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            'Iteration', 'QD-Score', 'Coverage', 'Maximum', 'Average',
-            'Mean Success Rate', 'Max Success Rate', 'Max Object Height',
-            'Mean Trajectory Length'
-        ])
+    resuming_summary = bool(
+        cfg.load_scheduler_from_cp and os.path.exists(summary_filename))
+    if not resuming_summary:
+        if os.path.exists(summary_filename):
+            os.remove(summary_filename)
+        with open(summary_filename, 'w') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'Iteration', 'QD-Score', 'Coverage', 'Maximum', 'Average',
+                'Mean Success Rate', 'Max Success Rate', 'Max Object Height',
+                'Mean Trajectory Length'
+            ])
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -647,13 +695,15 @@ def train_ppga(cfg: Box, vec_env):
         if cfg.initial_actor_checkpoint:
             checkpoint = torch.load(cfg.initial_actor_checkpoint,
                                     map_location=device,
-                                    weights_only=False)
+                                    weights_only=True)
+            _validate_actor_checkpoint(checkpoint, cfg)
             actor_state = checkpoint.get('actor_state_dict', checkpoint)
             initial_actor = Actor(
                 cfg.obs_shape, cfg.action_shape, cfg.normalize_obs,
                 cfg.normalize_returns, cfg.action_transform,
                 cfg.action_std_parameterization,
-                hidden_dims=cfg.actor_hidden_dims).to(device)
+                hidden_dims=cfg.actor_hidden_dims,
+                activation=cfg.actor_activation).to(device)
             actor_state = dict(actor_state)
             if ('actor_logstd' in actor_state and actor_state['actor_logstd'].shape
                     != initial_actor.actor_logstd.shape):
@@ -700,16 +750,16 @@ def train_ppga(cfg: Box, vec_env):
 
     ppo = scheduler.emitters[0].ppo
 
-    # save the initial heatmap
-    if cfg.save_heatmaps and cfg.num_dims <= 2:
+    starting_iter = scheduler.emitters[0].itrs
+
+    # Keep the original iteration-zero heatmap when resuming.
+    if cfg.save_heatmaps and cfg.num_dims <= 2 and starting_iter == 0:
         save_heatmap(result_archive,
                      os.path.join(str(heatmap_dir), f'heatmap_{0:05d}.png'))
 
     log_freq = 1
     log_arch_freq = cfg.log_arch_freq
 
-    starting_iter = scheduler.emitters[
-        0].itrs  # if loading a checkpoint, this will be > 0
     itrs = cfg.total_iterations
     # main loop
     for itr in range(starting_iter, itrs):
@@ -719,7 +769,8 @@ def train_ppga(cfg: Box, vec_env):
                            cfg.normalize_returns,
                            cfg.action_transform,
                            cfg.action_std_parameterization,
-                           hidden_dims=cfg.actor_hidden_dims).deserialize(
+                           hidden_dims=cfg.actor_hidden_dims,
+                           activation=cfg.actor_activation).deserialize(
                                solution_batch.flatten()).to(device)
         if not cfg.adaptive_stddev:
             initial_std = (
@@ -761,7 +812,8 @@ def train_ppga(cfg: Box, vec_env):
                   cfg.normalize_returns,
                   cfg.action_transform,
                   cfg.action_std_parameterization,
-                  hidden_dims=cfg.actor_hidden_dims).deserialize(sol).to(device)
+                  hidden_dims=cfg.actor_hidden_dims,
+                  activation=cfg.actor_activation).deserialize(sol).to(device)
             for sol in branched_sols
         ]
         # Do not overwrite actor_logstd here: it is part of each serialized
@@ -796,7 +848,8 @@ def train_ppga(cfg: Box, vec_env):
                 cfg.normalize_returns,
                 cfg.action_transform,
                 cfg.action_std_parameterization,
-                hidden_dims=cfg.actor_hidden_dims).deserialize(
+                hidden_dims=cfg.actor_hidden_dims,
+                activation=cfg.actor_activation).deserialize(
                     scheduler.emitters[0].theta).to(device)
             if cfg.normalize_obs:
                 mean_agent.obs_normalizer = scheduler.emitters[
@@ -811,6 +864,8 @@ def train_ppga(cfg: Box, vec_env):
 
         ppo.grad_coeffs = mean_grad_coeffs
         ppo.agents = [mean_agent]
+        protected_mean = (copy.deepcopy(mean_agent)
+                          if cfg.mean_min_success_rate > 0 else None)
         log.info('Moving the mean solution point...')
         ppo.train(vec_env=vec_env,
                   num_updates=cfg.move_mean_iters,
@@ -819,6 +874,20 @@ def train_ppga(cfg: Box, vec_env):
                   move_mean_agent=True)
 
         trained_mean_agent = ppo.agents[0]
+        if protected_mean is not None:
+            _, _, mean_metadata = ppo.evaluate(
+                ppo.vec_inference, vec_env, deterministic=cfg.eval_deterministic)
+            mean_success = mean_metadata[0].get('episode_success_rate', np.nan)
+            if not np.isfinite(mean_success):
+                raise ValueError('Mean success guard requires episode_success_rate metadata')
+            if mean_success < cfg.mean_min_success_rate:
+                log.warning(
+                    f'Rejected mean update: success={mean_success:.4f} < '
+                    f'{cfg.mean_min_success_rate:.4f}; restoring pre-update actor')
+                trained_mean_agent = protected_mean
+                ppo.agents = [protected_mean]
+            else:
+                log.info(f'Accepted mean update: success={mean_success:.4f}')
         scheduler.emitters[0].update_theta(trained_mean_agent.serialize())
         if cfg.normalize_obs:
             scheduler.emitters[
@@ -943,6 +1012,8 @@ def main():
         raise ValueError('initial_action_std must be positive')
     if not 0.0 <= cfg.archive_min_success_rate <= 1.0:
         raise ValueError('archive_min_success_rate must be in [0, 1]')
+    if not 0.0 <= cfg.mean_min_success_rate <= 1.0:
+        raise ValueError('mean_min_success_rate must be in [0, 1]')
     if (cfg.mjlab_motion_speed_reference is not None
             and cfg.mjlab_motion_speed_reference <= 0):
         raise ValueError('mjlab_motion_speed_reference must be positive')
@@ -1013,7 +1084,10 @@ def main():
             'checkpoint. If you plan to restart this experiment from a checkpoint or wish to have the added '
             'safety of recovering from a potential crash, it is recommended that you enable save_scheduler.'
         )
-    train_ppga(cfg, vec_env)
+    try:
+        train_ppga(cfg, vec_env)
+    finally:
+        vec_env.close()
 
 
 if __name__ == '__main__':
